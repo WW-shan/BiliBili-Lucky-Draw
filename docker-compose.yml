@@ -1,46 +1,74 @@
-
-
-version: '3'
 services:
   bili-db:
-    image: mysql:5.7
+    image: mysql@sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb
     container_name: bili-db
     environment:
-      MYSQL_ROOT_PASSWORD: luckybililuckybili
-      MYSQL_DATABASE: luckybili
-      MYSQL_USER: luckybili
-      MYSQL_PASSWORD: luckybililuckybili
+      TZ: ${TZ:-Asia/Shanghai}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Set MYSQL_DATABASE in .env}
+      MYSQL_USER: ${MYSQL_USER:?Set MYSQL_USER in .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
     ports:
-      - "3206:3306"
+      - "127.0.0.1:3206:3306"
     volumes:
-      - ./lib/init_db_script.sql:/docker-entrypoint-initdb.d/init_db_script.sql  # 挂载init_db_script.sql文件到容器内的初始化目录
-      - ./db_data:/var/lib/mysql  # 持久化MySQL数据
+      - ./lib/init_db_script.sql:/docker-entrypoint-initdb.d/init_db_script.sql:ro
+      - ./db_data:/var/lib/mysql
     command: --default-authentication-plugin=mysql_native_password
-
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
 
   bili-selenium:
-    image: selenium/standalone-chrome:latest
+    image: selenium/standalone-chrome@sha256:3fa985d1a73d1a3ae43c758d546b505b9d73e31ecaffd7a77725f19d1a70edec
     container_name: bili-selenium
     ports:
-      - 5555:4444
-      - 7900:7900
+      - "127.0.0.1:5555:4444"
+      - "127.0.0.1:7900:7900"
     shm_size: 1g
+    mem_limit: 2g
     environment:
-      - SE_NODE_MAX_SESSIONS=5
-      - SE_NODE_MAX_INSTANCES=5
-      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      TZ: ${TZ:-Asia/Shanghai}
+      SE_NODE_MAX_SESSIONS: 1
+      SE_NODE_MAX_INSTANCES: 1
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+      SE_NODE_SESSION_TIMEOUT: 600
+      SE_ENABLE_VIDEO: "false"
+      VNC_NO_PASSWORD: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4444/status | grep -Eq '\"availability\"[[:space:]]*:[[:space:]]*\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
 
-  # 执行转发动态的服务
   dynamic_share:
+    mem_limit: 256m
+    memswap_limit: 512m
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - .env
+      - .env.runtime
+    environment:
+      DB_HOST: bili-db
+      PORT: "3306"
+      SELENIUM_URL: http://bili-selenium:4444
+      SELENIUM_PAGE_LOAD_TIMEOUT: ${SELENIUM_PAGE_LOAD_TIMEOUT:-45}
+      SELENIUM_SCRIPT_TIMEOUT: ${SELENIUM_SCRIPT_TIMEOUT:-90}
+      SCHEDULE_INTERVAL_HOURS: ${SCHEDULE_INTERVAL_HOURS:-3}
+      AUTO_RUN_ON_START: ${AUTO_RUN_ON_START:-true}
+      SHARE_BATCH_LIMIT: ${SHARE_BATCH_LIMIT:-5}
     volumes:
-      - .:/app
-    restart: always
+      - ./Log:/app/Log
     depends_on:
-      - bili-selenium
-      - bili-db
-
-
-
+      bili-db:
+        condition: service_healthy
+      bili-selenium:
+        condition: service_healthy
+    restart: unless-stopped

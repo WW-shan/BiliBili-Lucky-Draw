@@ -32,7 +32,6 @@ DRIVER_VERSION = os.getenv("DRIVER_VERSION")
 
 def getHost():
     host = get_infos("DB_HOST")
-    print(host)
     if len(host) != 0:
         return host
     return get_host_ip()
@@ -70,7 +69,12 @@ share_content = get_random_share_content()
 comment_content = get_random_comment_content()
 ups = get_multi_infos("ups")
 db_host = getHost()
-selenium_url = "http://" + getHost() + ":5555"
+selenium_url = os.getenv("SELENIUM_URL") or "http://" + getHost() + ":5555"
+selenium_page_load_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT", "45"))
+selenium_script_timeout = int(os.getenv("SELENIUM_SCRIPT_TIMEOUT", "90"))
+schedule_interval_hours = max(1, int(os.getenv("SCHEDULE_INTERVAL_HOURS", "3")))
+auto_run_on_start = os.getenv("AUTO_RUN_ON_START", "true").strip().lower() in ("1", "true", "yes", "y")
+share_batch_limit = max(1, int(os.getenv("SHARE_BATCH_LIMIT", "5")))
 
 if __name__ == '__main__':
     print(db_host)

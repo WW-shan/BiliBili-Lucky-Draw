@@ -3,6 +3,10 @@
 .dockerignore
 .github
 .DS_Store
+.env
+.env.runtime
+.gateway.env
+.gateway.credentials
 
 Dockerfile
 docker-compose.yml

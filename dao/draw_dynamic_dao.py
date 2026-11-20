@@ -17,6 +17,17 @@ class DrawDynamicDao(object):
         except Exception as e:
             return {}
 
+    def query_by_status(self, status=0, limit=2000, newest_first=False):
+        try:
+            order = " desc" if newest_first else ""
+            sql = ("SELECT * FROM " + self.table_name + " where status = '" + str(status) + "'"
+                   + " order by insert_time" + order)
+            if limit is not None and int(limit) > 0:
+                sql = sql + " limit " + str(int(limit))
+            return self.db.select_db(sql)
+        except Exception:
+            return {}
+
     def query_by_dyn_url(self, dyn_url):
         try:
             sql = "SELECT * FROM " + self.table_name + " where dyn_url = '" + dyn_url + "'";

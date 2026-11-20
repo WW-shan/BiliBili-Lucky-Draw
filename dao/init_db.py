@@ -20,11 +20,8 @@ def init_db():
         'charset': charset,
         'cursorclass': pymysql.cursors.DictCursor
     }
-    logging.warning("ip :" + str(db_host))
-    logging.info("db info :")
-    logging.info(config)
+    logging.info("Connecting to MySQL at %s:%s/%s", db_host, port, dbname)
     db = MysqldbHelper(config)
     db.selectDataBase(dbname)
-    logging.warning("创建数据库连接信息 :" + str(config))
     return db
 

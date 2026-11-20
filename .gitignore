@@ -1,6 +1,11 @@
 pyvenv
 .idea
 Log
+.env
+.env.runtime
+.gateway.env
+.gateway.credentials
+db_data/
 
 
 __pycache__

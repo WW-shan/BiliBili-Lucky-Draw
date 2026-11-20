@@ -86,7 +86,7 @@ class RemoveShareService(object):
         try:
             self.bro.get(lucky_dynamic_url)
             self.bro.refresh()
-            ElementUtil.wait_to_go(self.bro)
+            ElementUtil.wait_for_page_load(self.bro)
             self.click_delete(self.bro, self.chains)
             random_sleep()
             # 回填状态

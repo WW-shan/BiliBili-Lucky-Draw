@@ -270,7 +270,7 @@ class BiliLinkShareTests(unittest.TestCase):
         )
         service.share_info_dao.insert_shareInfo.assert_not_called()
 
-    def test_non_risk_failure_is_not_retried_every_cycle(self):
+    def test_non_risk_failure_is_reverified_instead_of_being_terminal(self):
         service = self.build_service()
         service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
         login = Mock()
@@ -297,7 +297,7 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
-            url='https://www.bilibili.com/opus/123', status=3
+            url='https://www.bilibili.com/opus/123', status=0
         )
         service.share_info_dao.insert_shareInfo.assert_not_called()
 

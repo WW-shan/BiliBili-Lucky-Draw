@@ -94,12 +94,12 @@ class BiliLinkShare(object):
                             % (evidence, lucky_dynamic_url)
                         )
                     mylogger.warning(
-                        '单条动态参与失败，标记失败避免无限重试：%s，原因：%s',
+                        '单条动态参与失败，保留验证队列等待复验：%s，原因：%s',
                         lucky_dynamic_url,
                         dyn.last_error,
                     )
                     self.draw_dynamic_dao.update_sharedUrl(
-                        url=lucky_dynamic_url, status=3
+                        url=lucky_dynamic_url, status=0
                     )
                     continue
                 if dyn.share_status == 2:

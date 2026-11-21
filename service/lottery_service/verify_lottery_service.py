@@ -70,6 +70,7 @@ class VerifyLotteryService(object):
             'deferred': 0,
             'expired': 0,
             'skipped_recent': 0,
+            'reverified_after_failure': 0,
         }
         eligible = []
         for candidate in candidates:
@@ -84,6 +85,23 @@ class VerifyLotteryService(object):
             eligible.append(candidate)
             if len(eligible) >= limit:
                 break
+        if len(eligible) < limit:
+            failed_candidates = self.draw_dao.query_by_status(
+                status=3,
+                limit=limit - len(eligible),
+                newest_first=True,
+            ) or []
+            for candidate in failed_candidates:
+                url = candidate.get('dyn_url')
+                if not url:
+                    continue
+                if self.scan_cache_dao.has_recent_failure(
+                    'lottery', url, self.FAILED_RETRY_HOURS
+                ):
+                    stats['skipped_recent'] += 1
+                    continue
+                eligible.append(candidate)
+                stats['reverified_after_failure'] += 1
         try:
             if eligible:
                 self._ensure_browser()

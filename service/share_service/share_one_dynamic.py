@@ -73,11 +73,20 @@ class DynamicShareBase(object):
         self.expire_date = None
         self.lottery_time = None
         self.lottery_source = None
+        self.notice_lottery_time = None
         self.publish_time = None
         self.current_user_name = None
         self.last_error = None
 
-    def share_one(self, bro, chains, lucky_dynamic_url, share_content, comment_content):
+    def share_one(
+        self,
+        bro,
+        chains,
+        lucky_dynamic_url,
+        share_content,
+        comment_content,
+        lottery_end_time=None,
+    ):
         """
         提供需要转发的抽奖动态URL，然后“执行状态、up主的ID、up主的主页URL”等信息
         :param bro:
@@ -85,6 +94,8 @@ class DynamicShareBase(object):
         :param lucky_dynamic_url: 需要进行转发的抽奖动态的URL
         :return:
         """
+        self.notice_lottery_time = None
+        self.lottery_time = self._coerce_datetime(lottery_end_time)
         try:
             bro.get(lucky_dynamic_url)
             self.wait_page_ready(bro)
@@ -100,7 +111,10 @@ class DynamicShareBase(object):
                 self.share_status = 3
                 self.last_error = '无法确认官方互动抽奖：' + reason
                 return
-            self.resolve_lottery_time(bro)
+            if self.notice_lottery_time is not None:
+                self.lottery_time = self.notice_lottery_time
+            if self.lottery_time is None:
+                self.resolve_lottery_time(bro)
             if self.is_expired_dynamic(bro):
                 self.status = 2
                 self.share_status = 2
@@ -149,6 +163,29 @@ class DynamicShareBase(object):
             mylogger.info('单条动态转发--执行结束')
 
     @staticmethod
+    def _coerce_datetime(value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            timestamp = int(text)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(text)
+            except ValueError:
+                return None
+        if timestamp > 10_000_000_000:
+            timestamp //= 1000
+        try:
+            return datetime.fromtimestamp(timestamp)
+        except (OSError, OverflowError, ValueError):
+            return None
+
+    @staticmethod
     def _notice_datetime(value):
         if value is None:
             return None
@@ -188,6 +225,9 @@ class DynamicShareBase(object):
                 code = result.get('code')
                 if code == 0 and result.get('lottery_id'):
                     self.lottery_source = 'official_notice'
+                    self.notice_lottery_time = self._coerce_datetime(
+                        result.get('lottery_time')
+                    )
                     return {
                         'confirmed': True,
                         'retryable': False,

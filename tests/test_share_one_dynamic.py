@@ -53,6 +53,32 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertEqual(share.share_status, 0)
         self.assertEqual(share.share_url, 'https://www.bilibili.com/opus/123')
 
+    def test_preverified_expired_lottery_stops_before_page_time_parsing_or_actions(self):
+        share = DynamicShareBase()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'verify_official_lottery', return_value=(True, '')
+        ), patch.object(share, 'resolve_lottery_time') as resolve_time, patch.object(
+            share, 'click_follow_all'
+        ) as click_follow, patch.object(
+            share, 'click_like'
+        ) as click_like, patch.object(
+            share, 'click_share'
+        ) as click_share:
+            share.share_one(
+                Mock(),
+                Mock(),
+                'https://www.bilibili.com/opus/123',
+                'share',
+                'comment',
+                lottery_end_time='2020-01-01 00:00:00',
+            )
+
+        resolve_time.assert_not_called()
+        click_follow.assert_not_called()
+        click_like.assert_not_called()
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 2)
+
     def test_unconfirmed_lottery_stops_before_any_social_action(self):
         share = DynamicShareBase()
         with patch.object(share, 'wait_page_ready'), patch.object(

@@ -134,6 +134,27 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         )
         service.scan_cache_dao.save_failure.assert_called_once()
 
+    def test_confirmed_but_expired_lottery_is_not_queued_for_action(self):
+        service = self.build_service()
+        service.draw_dao.query_by_status.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1'}
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': True,
+            'lottery_id': '456',
+            'lottery_end_time': '2020-01-01 00:00:00',
+            'reason': '',
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['confirmed'], 1)
+        self.assertEqual(stats['expired'], 1)
+        service.ready_dao.upsert.assert_not_called()
+        service.draw_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1', status='2'
+        )
+
     def test_recent_verification_failure_is_skipped(self):
         service = self.build_service()
         service.scan_cache_dao.has_recent_failure.side_effect = [True, False, False]

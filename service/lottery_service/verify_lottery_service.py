@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 
 from dao.draw_dynamic_dao import DrawDynamicDao
 from dao.init_db import init_db
@@ -16,6 +17,19 @@ mylogger = MyLogger('verify_lottery_service.py').getLogger()
 
 class VerifyLotteryService(object):
     FAILED_RETRY_HOURS = 24
+
+    @staticmethod
+    def _is_expired(lottery_end_time):
+        if lottery_end_time is None:
+            return False
+        if isinstance(lottery_end_time, datetime):
+            end_time = lottery_end_time
+        else:
+            try:
+                end_time = datetime.fromisoformat(str(lottery_end_time))
+            except (TypeError, ValueError):
+                return False
+        return datetime.now() >= end_time
 
     def __init__(
         self,
@@ -54,6 +68,7 @@ class VerifyLotteryService(object):
             'confirmed': 0,
             'excluded': 0,
             'deferred': 0,
+            'expired': 0,
             'skipped_recent': 0,
         }
         eligible = []
@@ -79,14 +94,20 @@ class VerifyLotteryService(object):
                 source = candidate.get('source') or ''
                 note = candidate.get('note') or ''
                 if result.get('confirmed'):
+                    stats['confirmed'] += 1
+                    lottery_end_time = result.get('lottery_end_time')
+                    if self._is_expired(lottery_end_time):
+                        self.draw_dao.update_sharedUrl(url=url, status='2')
+                        self.scan_cache_dao.save_success('lottery', url, source, note, 1)
+                        stats['expired'] += 1
+                        continue
                     self.ready_dao.upsert(
                         url,
                         result.get('lottery_id'),
-                        result.get('lottery_end_time'),
+                        lottery_end_time,
                     )
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     self.scan_cache_dao.save_success('lottery', url, source, note, 1)
-                    stats['confirmed'] += 1
                 elif not result.get('retryable'):
                     self.draw_dao.update_sharedUrl(url=url, status='4')
                     self.scan_cache_dao.save_success('lottery', url, source, note, 0)

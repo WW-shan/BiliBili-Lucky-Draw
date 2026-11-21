@@ -78,7 +78,14 @@ class BiliLinkShare(object):
                     random_sleep(start=20, end=30)
                 dyn = DynamicShareBase()
                 dyn.user_id = self.user_id
-                dyn.share_one(self.bro, self.chains, lucky_dynamic_url, get_random_share_content(), get_random_comment_content())
+                dyn.share_one(
+                    self.bro,
+                    self.chains,
+                    lucky_dynamic_url,
+                    get_random_share_content(),
+                    get_random_comment_content(),
+                    lottery_end_time=data.get('lottery_end_time'),
+                )
                 if dyn.last_error:
                     evidence = dyn.get_risk_control_evidence(dyn.last_error)
                     if evidence:

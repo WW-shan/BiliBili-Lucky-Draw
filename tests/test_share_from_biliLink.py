@@ -101,6 +101,10 @@ class BiliLinkShareTests(unittest.TestCase):
 
     def test_successful_share_records_result(self):
         service = self.build_service()
+        service.get_today_dynamic_links.return_value = [{
+            'dyn_url': 'https://www.bilibili.com/opus/123',
+            'lottery_end_time': '2026-11-25 20:00:00',
+        }]
         service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
         login = Mock()
         login.login_by_cookie.return_value = '35549700'
@@ -129,6 +133,14 @@ class BiliLinkShareTests(unittest.TestCase):
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
             url='https://www.bilibili.com/opus/123', status=1
+        )
+        dynamic.share_one.assert_called_once_with(
+            service.bro,
+            service.chains,
+            'https://www.bilibili.com/opus/123',
+            'share',
+            'comment',
+            lottery_end_time='2026-11-25 20:00:00',
         )
         service.share_info_dao.insert_shareInfo.assert_called_once_with(dynamic)
         service.follow_up_dao.saverUpdate.assert_called_once_with(

@@ -58,7 +58,8 @@ class SearchDynamicRegressionTests(unittest.TestCase):
 
         self.assertEqual([row['id'] for row in selected], [2, 3])
 
-    def test_readlist_discovery_scans_only_latest_article_and_caches_it(self):
+    def test_readlist_discovery_scans_recent_articles_and_caches_each(self):
+        now = datetime.now()
         scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
         scanner.count = 0
         scanner.search_note = ''
@@ -77,20 +78,19 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             {
                 'code': 0,
                 'data': {'articles': [
-                    {'id': 54011152, 'publish_time': 300, 'title': 'space latest'},
+                    {'id': 54011152, 'publish_time': int((now - timedelta(days=1)).timestamp())},
                 ]},
             },
             {
                 'code': 0,
                 'data': {'articles': [
-                    {'id': 40384169, 'publish_time': 200, 'title': 'collection'},
-                    {'id': 40384168, 'publish_time': 100, 'title': 'older'},
+                    {'id': 40384169, 'publish_time': int((now - timedelta(days=2)).timestamp())},
+                    {'id': 40384168, 'publish_time': int((now - timedelta(days=3)).timestamp())},
                 ]},
             },
         ])
-        scanner.extract_links_from_detail_page = Mock(side_effect=[
-            ['https://www.bilibili.com/opus/1271215276335038485'],
-            ['https://www.bilibili.com/opus/1271215276335038485'],
+        scanner.extract_links_from_detail_page = Mock(return_value=[
+            'https://www.bilibili.com/opus/1271215276335038485'
         ])
         scanner.dynLinks_to_db = Mock()
         spec = SearchDynamicByUps.SOURCE_SPECS['J君名']
@@ -98,24 +98,103 @@ class SearchDynamicRegressionTests(unittest.TestCase):
         scanner.search_readlist_source(Mock(), spec, 'J君名')
 
         self.assertEqual(
-            scanner.extract_links_from_detail_page.call_args_list,
+            [item.args[1] for item in scanner.extract_links_from_detail_page.call_args_list],
             [
-                call(
-                    scanner.fetch_json.call_args_list[0].args[0],
-                    'https://www.bilibili.com/read/cv54011152',
-                ),
-                call(
-                    scanner.fetch_json.call_args_list[0].args[0],
-                    'https://www.bilibili.com/read/cv40384169',
-                ),
+                'https://www.bilibili.com/read/cv54011152',
+                'https://www.bilibili.com/read/cv40384169',
+                'https://www.bilibili.com/read/cv40384168',
             ],
         )
-        self.assertEqual(scanner.scan_cache_dao.save_success.call_count, 2)
+        self.assertEqual(scanner.scan_cache_dao.save_success.call_count, 3)
         scanner.dynLinks_to_db.assert_called_once_with(
             ['https://www.bilibili.com/opus/1271215276335038485'],
             'https://space.bilibili.com/126038161/dynamic',
             'J君名',
         )
+
+    def test_select_recent_articles_covers_all_articles_from_last_seven_days(self):
+        now = datetime(2026, 11, 21, 12, 0, 0)
+        rows = [
+            {'id': 1, 'publish_time': int((now - timedelta(days=1)).timestamp())},
+            {'id': 2, 'publish_time': int((now - timedelta(days=6, hours=23)).timestamp())},
+            {'id': 3, 'publish_time': int((now - timedelta(days=7, minutes=1)).timestamp())},
+            {'id': 4, 'publish_time': int((now - timedelta(days=20)).timestamp())},
+        ]
+
+        selected = SearchDynamicByUps.select_recent_articles(rows, days=7, now=now)
+
+        self.assertEqual([row['id'] for row in selected], [1, 2])
+
+    def test_readlist_discovery_scans_every_article_from_last_seven_days(self):
+        now = datetime.now()
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.scan_cache_skip_count = 0
+        scanner.scan_cache_retry_skip_count = 0
+        scanner.scan_cache_dao = Mock()
+        scanner.scan_cache_dao.has_success.return_value = False
+        scanner.scan_cache_dao.has_recent_failure.return_value = False
+        scanner.fetch_json = Mock(side_effect=[
+            {'code': 0, 'data': {'lists': [
+                {'id': '845787', 'name': '抽奖', 'update_time': 1},
+            ]}},
+            {'code': 0, 'data': {'articles': [
+                {'id': 54011152, 'publish_time': int((now - timedelta(days=1)).timestamp())},
+            ]}},
+            {'code': 0, 'data': {'articles': [
+                {'id': 40384169, 'publish_time': int((now - timedelta(days=2)).timestamp())},
+                {'id': 40384168, 'publish_time': int((now - timedelta(days=3)).timestamp())},
+                {'id': 40384167, 'publish_time': int((now - timedelta(days=8)).timestamp())},
+            ]}},
+        ])
+        scanner.extract_links_from_detail_page = Mock(return_value=[])
+        scanner.dynLinks_to_db = Mock()
+
+        scanner.search_readlist_source(
+            Mock(), SearchDynamicByUps.SOURCE_SPECS['J君名'], 'J君名'
+        )
+
+        scanned_urls = [
+            call.args[1]
+            for call in scanner.extract_links_from_detail_page.call_args_list
+        ]
+        self.assertEqual(scanned_urls, [
+            'https://www.bilibili.com/read/cv54011152',
+            'https://www.bilibili.com/read/cv40384169',
+            'https://www.bilibili.com/read/cv40384168',
+        ])
+
+    def test_space_feed_scans_all_recent_detail_articles_not_only_latest(self):
+        now = datetime.now()
+        browser = Mock()
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner._open_page = Mock()
+        scanner.extract_feed_snapshot_from_api = Mock(return_value={
+            'code': 0,
+            'items': [
+                {
+                    'id': str(1270000000000000001 + index),
+                    'type': 'DYNAMIC_TYPE_ARTICLE',
+                    'pub_ts': str(int((now - timedelta(days=index + 1)).timestamp())),
+                    'text': '抽奖合集',
+                }
+                for index in range(5)
+            ],
+        })
+        scanner.scan_cache_dao = Mock()
+        scanner.scan_cache_dao.has_success.return_value = False
+        scanner.scan_cache_dao.has_recent_failure.return_value = False
+        scanner.scan_cache_skip_count = 0
+        scanner.scan_cache_retry_skip_count = 0
+        scanner.extract_links_from_detail_page = Mock(return_value=[])
+        scanner.dynLinks_to_db = Mock()
+
+        scanner.search_dynamic_links_by_up(
+            browser, 'https://space.bilibili.com/123/dynamic', 'source'
+        )
+
+        self.assertEqual(scanner.extract_links_from_detail_page.call_count, 5)
 
     def test_dynamic_card_selectors_are_independent_css_selectors(self):
         selectors = SearchDynamicByUps.DYNAMIC_CARD_SELECTORS

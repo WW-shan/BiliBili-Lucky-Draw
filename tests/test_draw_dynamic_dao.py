@@ -23,6 +23,22 @@ class DrawDynamicDaoTests(unittest.TestCase):
         )
         self.assertIn('limit 3', sql)
 
+    def test_verification_priority_is_fair_round_robin(self):
+        db = Mock()
+        db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]
+        dao = DrawDynamicDao(db)
+
+        rows = dao.query_by_verification_priority(limit=30)
+
+        self.assertEqual(rows, db.select_db.return_value)
+        sql = db.select_db.call_args.args[0].lower()
+        self.assertIn("d.status in ('0', '3')", sql)
+        self.assertIn('left join t_scan_cache', sql)
+        self.assertIn("c.scan_type = 'lottery'", sql)
+        self.assertIn('c.update_time is null', sql)
+        self.assertIn('c.update_time asc', sql)
+        self.assertIn('limit 30', sql)
+
 
 if __name__ == '__main__':
     unittest.main()

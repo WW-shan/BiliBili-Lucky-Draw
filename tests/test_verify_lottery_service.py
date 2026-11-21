@@ -36,10 +36,10 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.scan_cache_dao = Mock()
         service.checker = Mock()
         service.pause_seconds = 0
-        service.draw_dao.query_by_status.return_value = [
-            {'dyn_url': 'https://www.bilibili.com/opus/1'},
-            {'dyn_url': 'https://www.bilibili.com/opus/2'},
-            {'dyn_url': 'https://www.bilibili.com/opus/3'},
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/2', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/3', 'status': '0'},
         ]
         service.scan_cache_dao.has_recent_failure.return_value = False
         return service
@@ -49,7 +49,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.owns_browser = True
         service.bro = None
         service.chains = None
-        service.draw_dao.query_by_status.return_value = []
+        service.draw_dao.query_by_verification_priority.return_value = []
 
         with patch(
             'service.lottery_service.verify_lottery_service.init_webdriver'
@@ -61,9 +61,9 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
     def test_newer_pending_candidate_is_verified_before_older_cooling_rows(self):
         service = self.build_service()
-        service.draw_dao.query_by_status.side_effect = [
-            [{'dyn_url': 'https://www.bilibili.com/opus/new'}],
-            [{'dyn_url': 'https://www.bilibili.com/opus/old', 'status': '0'}],
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/new', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/old', 'status': '0'},
         ]
         service.scan_cache_dao.has_recent_failure.side_effect = [False, True]
         service.checker.fetch_official_lottery_notice.return_value = {
@@ -83,8 +83,8 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.owns_browser = True
         service.bro = None
         service.chains = None
-        service.draw_dao.query_by_status.return_value = [
-            {'dyn_url': 'https://www.bilibili.com/opus/1'}
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'}
         ]
         service.checker.fetch_official_lottery_notice.return_value = {
             'confirmed': False,
@@ -155,8 +155,8 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
     def test_confirmed_but_expired_lottery_is_not_queued_for_action(self):
         service = self.build_service()
-        service.draw_dao.query_by_status.return_value = [
-            {'dyn_url': 'https://www.bilibili.com/opus/1'}
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'}
         ]
         service.checker.fetch_official_lottery_notice.return_value = {
             'confirmed': True,
@@ -176,10 +176,8 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
     def test_action_failure_is_reverified_instead_of_being_terminal(self):
         service = self.build_service()
-        service.draw_dao.query_by_status.side_effect = [
-            [],
-            [],
-            [{'dyn_url': 'https://www.bilibili.com/opus/9', 'status': '3'}],
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/9', 'status': '3'},
         ]
         service.checker.fetch_official_lottery_notice.return_value = {
             'confirmed': True,
@@ -191,13 +189,8 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         stats = service.verify_pending(limit=1)
 
         self.assertEqual(stats['reverified_after_failure'], 1)
-        self.assertIn(
-            unittest.mock.call(status=0, limit=4, newest_first=True),
-            service.draw_dao.query_by_status.call_args_list,
-        )
-        self.assertIn(
-            unittest.mock.call(status=3, limit=1, newest_first=True),
-            service.draw_dao.query_by_status.call_args_list,
+        service.draw_dao.query_by_verification_priority.assert_called_once_with(
+            limit=4
         )
         service.ready_dao.upsert.assert_called_once_with(
             'https://www.bilibili.com/opus/9', '999', '2099-01-01 00:00:00'
@@ -208,8 +201,8 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
     def test_unknown_response_is_deferred_not_excluded(self):
         service = self.build_service()
-        service.draw_dao.query_by_status.return_value = [
-            {'dyn_url': 'https://www.bilibili.com/opus/1'}
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'}
         ]
         service.checker.fetch_official_lottery_notice.return_value = {
             'confirmed': False,
@@ -235,9 +228,9 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
         stats = service.verify_pending(limit=3)
 
-        self.assertEqual(stats['checked'], 4)
-        self.assertEqual(stats['skipped_recent'], 2)
-        self.assertEqual(stats['reverified_after_failure'], 2)
+        self.assertEqual(stats['checked'], 2)
+        self.assertEqual(stats['skipped_recent'], 1)
+        self.assertEqual(stats['reverified_after_failure'], 0)
         service.checker.fetch_official_lottery_notice.assert_any_call(
             service.bro,
             'https://www.bilibili.com/opus/2',

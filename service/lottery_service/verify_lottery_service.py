@@ -58,10 +58,8 @@ class VerifyLotteryService(object):
 
     def verify_pending(self, limit=None):
         limit = max(1, int(limit or globals.verify_batch_limit))
-        candidates = self.draw_dao.query_by_status(
-            status=0,
-            limit=limit,
-            newest_first=True,
+        candidates = self.draw_dao.query_by_verification_priority(
+            limit=min(max(limit * 4, limit), 200)
         ) or []
         stats = {
             'checked': 0,
@@ -82,47 +80,11 @@ class VerifyLotteryService(object):
             ):
                 stats['skipped_recent'] += 1
                 continue
+            if str(candidate.get('status')) == '3':
+                stats['reverified_after_failure'] += 1
             eligible.append(candidate)
             if len(eligible) >= limit:
                 break
-        if len(eligible) < limit:
-            # 候选中可能有冷却项，不能把它们算作已占用的验证名额；
-            # 继续从更旧的待验证项补足，避免少量冷却项阻断整个批次。
-            fallback_candidates = self.draw_dao.query_by_status(
-                status=0,
-                limit=min(max(limit * 4, limit), 200),
-                newest_first=True,
-            ) or []
-            seen = {candidate.get('dyn_url') for candidate in candidates}
-            for candidate in fallback_candidates:
-                if len(eligible) >= limit:
-                    break
-                url = candidate.get('dyn_url')
-                if not url or url in seen:
-                    continue
-                if self.scan_cache_dao.has_recent_failure(
-                    'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0
-                ):
-                    stats['skipped_recent'] += 1
-                    continue
-                eligible.append(candidate)
-        if len(eligible) < limit:
-            failed_candidates = self.draw_dao.query_by_status(
-                status=3,
-                limit=limit - len(eligible),
-                newest_first=True,
-            ) or []
-            for candidate in failed_candidates:
-                url = candidate.get('dyn_url')
-                if not url:
-                    continue
-                if self.scan_cache_dao.has_recent_failure(
-                    'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0
-                ):
-                    stats['skipped_recent'] += 1
-                    continue
-                eligible.append(candidate)
-                stats['reverified_after_failure'] += 1
         try:
             if eligible:
                 self._ensure_browser()

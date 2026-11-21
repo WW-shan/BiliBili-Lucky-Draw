@@ -36,6 +36,26 @@ class DrawDynamicDao(object):
         except Exception:
             return {}
 
+    def query_by_verification_priority(self, limit=30):
+        """轮转验证队列：从未尝试的最先，其次最久未尝试的。"""
+        limit = max(1, int(limit))
+        sql = """
+        SELECT d.*, c.update_time AS lottery_checked_at
+        FROM t_draw_dynamic d
+        LEFT JOIN t_scan_cache c
+          ON c.scan_type = 'lottery' AND c.scan_url = d.dyn_url
+        WHERE d.status IN ('0', '3')
+        ORDER BY
+          CASE WHEN c.update_time IS NULL THEN 0 ELSE 1 END,
+          c.update_time ASC,
+          CAST(SUBSTRING_INDEX(d.dyn_url, '/', -1) AS UNSIGNED) DESC
+        LIMIT %s
+        """ % limit
+        try:
+            return self.db.select_db(sql) or []
+        except Exception:
+            return []
+
     def query_by_dyn_url(self, dyn_url):
         try:
             sql = "SELECT * FROM " + self.table_name + " where dyn_url = '" + dyn_url + "'";

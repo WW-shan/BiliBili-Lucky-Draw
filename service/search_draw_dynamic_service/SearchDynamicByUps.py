@@ -87,7 +87,7 @@ class SearchDynamicByUps(object):
         '?mid=%s&pn=1&ps=2&sort=publish_time'
     )
     GIVEAWAY_MARKERS = ('抽奖', '福利', '奖品', '抽取', '有奖', '中奖')
-    FEED_ITEM_MAX_AGE_DAYS = 31
+    FEED_ITEM_MAX_AGE_DAYS = 7
     MIN_CURRENT_DYNAMIC_ID = 1_250_000_000_000_000_000
     FEED_API_TEMPLATE = (
         'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space'
@@ -460,6 +460,22 @@ class SearchDynamicByUps(object):
         )
         return ordered[:int(limit)]
 
+    @staticmethod
+    def select_recent_articles(rows, days=7, now=None):
+        now = now or datetime.now()
+        cutoff = now - timedelta(days=max(1, int(days)))
+        selected = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                published = datetime.fromtimestamp(int(row.get('publish_time') or 0))
+            except (TypeError, ValueError, OSError, OverflowError):
+                continue
+            if published >= cutoff:
+                selected.append(row)
+        return SearchDynamicByUps.select_latest_articles(selected, len(selected))
+
     def should_scan_article(self, article_url):
         if self.scan_cache_dao.has_success('article', article_url):
             self.scan_cache_skip_count += 1
@@ -489,12 +505,11 @@ class SearchDynamicByUps(object):
         selected = self.select_readlists(spec, readlists)
 
         articles_to_scan = []
-        article_limit = max(1, int(spec.get('article_limit') or 1))
         space_payload = self.fetch_json(browser, self.SPACE_ARTICLE_API % mid)
         if space_payload.get('code') == 0:
             space_articles = (space_payload.get('data') or {}).get('articles') or []
             articles_to_scan.extend(
-                self.select_latest_articles(space_articles, article_limit)
+                self.select_recent_articles(space_articles, days=7)
             )
         else:
             mylogger.warning(
@@ -516,7 +531,7 @@ class SearchDynamicByUps(object):
                 continue
             articles = (payload.get('data') or {}).get('articles') or []
             articles_to_scan.extend(
-                self.select_latest_articles(articles, article_limit)
+                self.select_recent_articles(articles, days=7)
             )
 
         links = []
@@ -741,7 +756,8 @@ class SearchDynamicByUps(object):
         )
         detail_entries = [entry for entry in giveaway_entries if entry['kind'] == 'detail']
         direct_entries = [entry for entry in giveaway_entries if entry['kind'] == 'direct']
-        selected_details = self.select_latest_detail_entry(detail_entries)
+        # 最近 7 天内的文章型动态都要扫描；缓存负责跳过已经处理过的文章。
+        selected_details = detail_entries
         links = []
         for entry in selected_details:
             detail_links = self.extract_links_from_detail_page(browser, entry['url'])

@@ -16,7 +16,7 @@ mylogger = MyLogger('verify_lottery_service.py').getLogger()
 
 
 class VerifyLotteryService(object):
-    FAILED_RETRY_HOURS = 24
+    RETRY_BACKOFF_MINUTES = 5
 
     @staticmethod
     def _is_expired(lottery_end_time):
@@ -78,7 +78,7 @@ class VerifyLotteryService(object):
             if not url:
                 continue
             if self.scan_cache_dao.has_recent_failure(
-                'lottery', url, self.FAILED_RETRY_HOURS
+                'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0
             ):
                 stats['skipped_recent'] += 1
                 continue
@@ -101,7 +101,7 @@ class VerifyLotteryService(object):
                 if not url or url in seen:
                     continue
                 if self.scan_cache_dao.has_recent_failure(
-                    'lottery', url, self.FAILED_RETRY_HOURS
+                    'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0
                 ):
                     stats['skipped_recent'] += 1
                     continue
@@ -117,7 +117,7 @@ class VerifyLotteryService(object):
                 if not url:
                     continue
                 if self.scan_cache_dao.has_recent_failure(
-                    'lottery', url, self.FAILED_RETRY_HOURS
+                    'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0
                 ):
                     stats['skipped_recent'] += 1
                     continue
@@ -161,6 +161,9 @@ class VerifyLotteryService(object):
                         url,
                         result.get('reason') or 'unknown',
                     )
+                    # API 连续返回 -9999 时先做短退避，避免把整个批次打满；
+                    # 该条不会进入 24 小时全局冻结。
+                    time.sleep(1.5)
                 if self.pause_seconds:
                     time.sleep(self.pause_seconds)
         finally:

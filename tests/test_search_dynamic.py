@@ -3,6 +3,8 @@ import json
 from datetime import datetime, timedelta
 from unittest.mock import Mock, call, patch
 
+from selenium.common.exceptions import TimeoutException
+
 from service.bilibili_errors import BilibiliVerificationRequired, ensure_page_access
 from service.search_draw_dynamic_service.SearchDynamicByUps import SearchDynamicByUps
 from utils import globals
@@ -239,6 +241,25 @@ class SearchDynamicRegressionTests(unittest.TestCase):
                 page_text="正常内容",
             )
         )
+
+    def test_detail_page_navigation_timeout_stops_page_and_returns_none(self):
+        browser = Mock()
+        browser.get.side_effect = TimeoutException('navigation timed out')
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.scan_cache_dao = Mock()
+
+        with patch(
+            'service.search_draw_dynamic_service.SearchDynamicByUps.ensure_page_access'
+        ), patch(
+            'service.search_draw_dynamic_service.SearchDynamicByUps.time.monotonic',
+            side_effect=[0, 100],
+        ):
+            result = SearchDynamicByUps.extract_links_from_detail_page(
+                browser, 'https://www.bilibili.com/read/cv123'
+            )
+
+        self.assertIsNone(result)
+        browser.execute_script.assert_called_with('window.stop();')
 
     def test_document_http_412_raises_typed_verification_error(self):
         url = 'https://space.bilibili.com/100680137/dynamic'

@@ -698,6 +698,13 @@ class SearchDynamicByUps(object):
             )
         WebDriverWait(browser, timeout).until(content_ready)
 
+    @staticmethod
+    def _stop_page_load(browser):
+        try:
+            browser.execute_script('window.stop();')
+        except Exception:
+            pass
+
     @classmethod
     def extract_links_from_detail_page(cls, browser, detail_url):
         try:
@@ -705,7 +712,13 @@ class SearchDynamicByUps(object):
             cls.ensure_page_access(browser, detail_url)
             cls.wait_detail_content(browser)
         except TimeoutException:
-            cls.ensure_page_access(browser, detail_url)
+            cls._stop_page_load(browser)
+            try:
+                cls.ensure_page_access(browser, detail_url)
+            except BilibiliVerificationRequired:
+                raise
+            except Exception:
+                pass
             mylogger.warning('详情页加载超时，跳过：%s', detail_url)
             return None
         except BilibiliVerificationRequired:
@@ -730,6 +743,7 @@ class SearchDynamicByUps(object):
         try:
             browser.get(url)
         except TimeoutException:
+            SearchDynamicByUps._stop_page_load(browser)
             SearchDynamicByUps.ensure_page_access(browser, url)
             raise
         SearchDynamicByUps.ensure_page_access(browser, url)

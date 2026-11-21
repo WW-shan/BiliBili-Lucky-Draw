@@ -206,6 +206,24 @@ class VerifyLotteryServiceTests(unittest.TestCase):
             url='https://www.bilibili.com/opus/9', status='5'
         )
 
+    def test_unknown_response_is_deferred_not_excluded(self):
+        service = self.build_service()
+        service.draw_dao.query_by_status.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1'}
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False,
+            'retryable': True,
+            'reason': 'code0_without_lottery_id',
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['deferred'], 1)
+        self.assertEqual(stats['excluded'], 0)
+        service.draw_dao.update_sharedUrl.assert_not_called()
+        service.ready_dao.upsert.assert_not_called()
+
     def test_recent_verification_failure_is_skipped(self):
         service = self.build_service()
         service.scan_cache_dao.has_recent_failure.side_effect = [True, False, False, True, False, False]

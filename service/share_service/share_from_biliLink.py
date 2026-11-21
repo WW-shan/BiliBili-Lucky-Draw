@@ -1,6 +1,7 @@
 from dao.draw_dynamic_dao import DrawDynamicDao
 from dao.follow_up_dao import FollowUpInfoDao
 from dao.init_db import init_db
+from dao.lottery_ready_dao import LotteryReadyDao
 from dao.share_info_dao import ShareInfoDao
 from dao.statistics_dao import StatisticsDao
 from service.bilibili_errors import (
@@ -26,14 +27,13 @@ class BiliLinkShare(object):
         db = init_db()
         self.share_note = ""
         self.user_id = user_id
-        if bro is None:
-            self.bro, self.chains = init_webdriver()
-        else:
-            self.bro = bro
-            self.chains = chains
+        self.bro = bro
+        self.chains = chains
+        self.owns_browser = bro is None
         self.share_info_dao = ShareInfoDao(db)
         self.follow_up_dao = FollowUpInfoDao(db)
         self.draw_dynamic_dao = DrawDynamicDao(db)
+        self.lottery_ready_dao = LotteryReadyDao(db)
         self.statistics_dao = StatisticsDao(db)
         mylogger.error("启动：根据B站up主的分享链接进行抽奖动态转发!")
 
@@ -42,6 +42,12 @@ class BiliLinkShare(object):
         success_share_cnt = 0
         break_flag = 0
         try:
+            datas = self.get_today_dynamic_links()
+            if not datas:
+                mylogger.info('暂无已确认的官方抽奖，跳过本轮转发')
+                return
+            if self.owns_browser and self.bro is None:
+                self.bro, self.chains = init_webdriver()
             login_service = LoginService(self.bro, self.chains, self.user_id)
             authenticated_uid = login_service.login_by_cookie()
             if str(self.user_id) != authenticated_uid:
@@ -50,9 +56,7 @@ class BiliLinkShare(object):
                     authenticated_uid,
                 )
                 self.user_id = authenticated_uid
-            datas = self.get_today_dynamic_links()
-            if datas:
-                login_service.ensure_publish_cookie()
+            login_service.ensure_publish_cookie()
             ignore_links = self.get_ignore_link()
             for data in datas:
                 lucky_dynamic_url = remove_query_string(data['dyn_url'])
@@ -131,7 +135,7 @@ class BiliLinkShare(object):
                 mylogger.error('写入转发统计失败', exc_info=True)
             # 暂时停止移除
             # RemoveMsgService(self.user_id, success_share_cnt, bro=self.bro, chains=self.chains).do_remove()
-            if self.bro is not None:
+            if self.owns_browser and self.bro is not None:
                 try:
                     self.bro.quit()
                 except Exception:
@@ -144,10 +148,6 @@ class BiliLinkShare(object):
         return {}
 
     def get_today_dynamic_links(self):
-        """获取待参与队列；名称保留用于兼容现有调用方。"""
-        return self.draw_dynamic_dao.query_by_status(
-            status=0,
-            limit=globals.share_batch_limit,
-            newest_first=True,
-        )
+        """只读取已确认官方 lottery_id 的可执行队列。"""
+        return self.lottery_ready_dao.query_ready(limit=globals.share_batch_limit)
 

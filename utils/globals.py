@@ -73,6 +73,12 @@ selenium_url = os.getenv("SELENIUM_URL") or "http://" + getHost() + ":5555"
 selenium_page_load_timeout = int(os.getenv("SELENIUM_PAGE_LOAD_TIMEOUT", "45"))
 selenium_script_timeout = int(os.getenv("SELENIUM_SCRIPT_TIMEOUT", "90"))
 schedule_interval_hours = max(1, int(os.getenv("SCHEDULE_INTERVAL_HOURS", "3")))
+discovery_interval_hours = max(
+    1,
+    int(os.getenv("DISCOVERY_INTERVAL_HOURS", str(schedule_interval_hours))),
+)
+action_interval_minutes = max(1, int(os.getenv("ACTION_INTERVAL_MINUTES", "15")))
+verify_batch_limit = max(1, int(os.getenv("VERIFY_BATCH_LIMIT", "30")))
 auto_run_on_start = os.getenv("AUTO_RUN_ON_START", "true").strip().lower() in ("1", "true", "yes", "y")
 share_batch_limit = max(1, int(os.getenv("SHARE_BATCH_LIMIT", "5")))
 

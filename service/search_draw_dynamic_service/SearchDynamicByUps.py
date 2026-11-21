@@ -1,5 +1,6 @@
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
@@ -50,8 +51,44 @@ class SearchDynamicByUps(object):
         '抽奖工具人转发池': 'https://space.bilibili.com/280604312/dynamic',
     }
     FORWARD_POOL_SOURCES = frozenset({'抽奖工具人转发池'})
+    SOURCE_SPECS = {
+        '你的工具人老公': {
+            'mid': '100680137',
+            'mode': 'readlists',
+            'readlist_families': ('抽奖合集', '官方抽奖合集'),
+            'article_limit': 1,
+        },
+        '_大锦鲤_': {
+            'mid': '226257459',
+            'mode': 'readlists',
+            'readlist_names': ('抽奖专栏',),
+            'article_limit': 1,
+        },
+        'J君名': {
+            'mid': '126038161',
+            'mode': 'readlists',
+            'readlist_names': ('抽奖',),
+            'article_limit': 1,
+        },
+        '糯米是个背包': {
+            'mid': '492426375',
+            'mode': 'year_readlist',
+            'article_limit': 1,
+        },
+        '抽奖工具人转发池': {
+            'mid': '280604312',
+            'mode': 'forward_feed',
+        },
+    }
+    READLIST_API = 'https://api.bilibili.com/x/article/up/lists?mid=%s&sort=0'
+    ARTICLE_LIST_API = 'https://api.bilibili.com/x/article/list/web/articles?id=%s'
+    SPACE_ARTICLE_API = (
+        'https://api.bilibili.com/x/space/article'
+        '?mid=%s&pn=1&ps=2&sort=publish_time'
+    )
     GIVEAWAY_MARKERS = ('抽奖', '福利', '奖品', '抽取', '有奖', '中奖')
     FEED_ITEM_MAX_AGE_DAYS = 31
+    MIN_CURRENT_DYNAMIC_ID = 1_250_000_000_000_000_000
     FEED_API_TEMPLATE = (
         'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space'
         '?host_mid=%s&offset=&timezone_offset=-480'
@@ -110,6 +147,21 @@ class SearchDynamicByUps(object):
               };
             });
             done({code: payload.code, message: payload.message, items: items});
+          })
+          .catch(error => {
+            clearTimeout(timer);
+            done({error: String(error)});
+          });
+    '''
+    JSON_FETCH_SCRIPT = r'''
+        const endpoint = arguments[0];
+        const done = arguments[1];
+        const timer = setTimeout(() => done({timeout: true}), 20000);
+        fetch(endpoint, {credentials: 'include'})
+          .then(response => response.json())
+          .then(payload => {
+            clearTimeout(timer);
+            done(payload);
           })
           .catch(error => {
             clearTimeout(timer);
@@ -248,6 +300,16 @@ class SearchDynamicByUps(object):
             links.append(normalized)
 
     @classmethod
+    def is_current_dynamic_link(cls, url):
+        normalized = cls.normalize_dynamic_url(url)
+        if not normalized:
+            return False
+        match = re.search(r'/(\d+)$', normalized)
+        if not match:
+            return False
+        return int(match.group(1)) >= cls.MIN_CURRENT_DYNAMIC_ID
+
+    @classmethod
     def extract_links_from_current_page(cls, browser):
         links = []
         for element in browser.execute_script(cls.DETAIL_LINKS_SNAPSHOT_SCRIPT) or []:
@@ -279,6 +341,209 @@ class SearchDynamicByUps(object):
                 % (result.get('code'), result.get('message') or '未知')
             )
         return result
+
+    @classmethod
+    def fetch_json(cls, browser, endpoint):
+        try:
+            browser.set_script_timeout(45)
+        except Exception:
+            pass
+        result = browser.execute_async_script(cls.JSON_FETCH_SCRIPT, endpoint)
+        if not isinstance(result, dict):
+            raise RuntimeError('B站接口返回格式异常')
+        if result.get('timeout'):
+            raise TimeoutException('B站接口读取超时')
+        if result.get('error'):
+            raise RuntimeError('B站接口读取失败：%s' % result['error'])
+        return result
+
+    @staticmethod
+    def normalize_readlist_title(value):
+        return re.sub(r'\s+', '', unicodedata.normalize('NFKC', str(value or '')))
+
+    @classmethod
+    def parse_readlist_suffix(cls, value):
+        suffix = cls.normalize_readlist_title(value)
+        if suffix.startswith('系列'):
+            suffix = suffix[2:]
+        if not suffix:
+            return 1
+        if suffix.isdigit():
+            return int(suffix)
+        digits = {
+            '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3,
+            '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+        }
+        units = {'十': 10, '百': 100, '千': 1000}
+        if any(char not in digits and char not in units for char in suffix):
+            return 0
+        total = 0
+        current = 0
+        for char in suffix:
+            if char in digits:
+                current = digits[char]
+                continue
+            unit = units[char]
+            total += (current or 1) * unit
+            current = 0
+        return total + current
+
+    @classmethod
+    def select_readlists(cls, spec, rows):
+        candidates = [row for row in rows if isinstance(row, dict)]
+        selected = []
+        mode = spec.get('mode')
+        if mode == 'readlists':
+            titles = spec.get('readlist_families') or spec.get('readlist_names') or ()
+            for title in titles:
+                normalized_title = cls.normalize_readlist_title(title)
+                matches = [
+                    row for row in candidates
+                    if cls.normalize_readlist_title(row.get('name') or row.get('title'))
+                    .startswith(normalized_title)
+                ]
+                if spec.get('readlist_names'):
+                    matches = [
+                        row for row in matches
+                        if cls.normalize_readlist_title(row.get('name') or row.get('title'))
+                        == normalized_title
+                    ]
+                if not matches:
+                    continue
+
+                def rank(row):
+                    raw_title = cls.normalize_readlist_title(
+                        row.get('name') or row.get('title')
+                    )
+                    suffix = raw_title[len(normalized_title):]
+                    return (
+                        cls.parse_readlist_suffix(suffix),
+                        int(row.get('update_time') or 0),
+                        int(row.get('id') or 0),
+                    )
+
+                selected.append(max(matches, key=rank))
+        elif mode == 'year_readlist':
+            years = [
+                row for row in candidates
+                if str(row.get('name') or row.get('title') or '').isdigit()
+                and len(str(row.get('name') or row.get('title') or '')) == 4
+                and 2000 <= int(row.get('name') or row.get('title')) <= 2100
+            ]
+            if years:
+                selected.append(max(years, key=lambda row: int(row.get('name') or row.get('title'))))
+
+        unique = []
+        seen = set()
+        for row in selected:
+            row_id = str(row.get('id') or '')
+            if row_id and row_id not in seen:
+                seen.add(row_id)
+                unique.append(row)
+        return unique
+
+    @staticmethod
+    def select_latest_articles(rows, limit=1):
+        if int(limit) < 1:
+            return []
+
+        def timestamp(row):
+            try:
+                return int(row.get('publish_time') or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        ordered = sorted(
+            [row for row in rows if isinstance(row, dict)],
+            key=lambda row: (timestamp(row), int(row.get('id') or 0)),
+            reverse=True,
+        )
+        return ordered[:int(limit)]
+
+    def should_scan_article(self, article_url):
+        if self.scan_cache_dao.has_success('article', article_url):
+            self.scan_cache_skip_count += 1
+            mylogger.info('合集文章已扫描，跳过：%s', article_url)
+            return False
+        if self.scan_cache_dao.has_recent_failure(
+            'article', article_url, self.FAILED_DETAIL_RETRY_HOURS
+        ):
+            self.scan_cache_retry_skip_count += 1
+            mylogger.info('合集文章近期扫描失败，暂不重试：%s', article_url)
+            return False
+        return True
+
+    def search_readlist_source(self, browser, spec, note):
+        mid = str(spec['mid'])
+        base_url = 'https://space.bilibili.com/%s/dynamic' % mid
+        readlist_payload = self.fetch_json(browser, self.READLIST_API % mid)
+        if readlist_payload.get('code') != 0:
+            mylogger.warning(
+                '合集列表接口异常 %s：code=%s，继续检查空间最新文章',
+                note,
+                readlist_payload.get('code'),
+            )
+            readlists = []
+        else:
+            readlists = (readlist_payload.get('data') or {}).get('lists') or []
+        selected = self.select_readlists(spec, readlists)
+
+        articles_to_scan = []
+        article_limit = max(1, int(spec.get('article_limit') or 1))
+        space_payload = self.fetch_json(browser, self.SPACE_ARTICLE_API % mid)
+        if space_payload.get('code') == 0:
+            space_articles = (space_payload.get('data') or {}).get('articles') or []
+            articles_to_scan.extend(
+                self.select_latest_articles(space_articles, article_limit)
+            )
+        else:
+            mylogger.warning(
+                '空间最新文章接口异常 %s：code=%s', note, space_payload.get('code')
+            )
+
+        for readlist in selected:
+            readlist_id = str(readlist.get('id') or '')
+            if not readlist_id.isdigit():
+                continue
+            payload = self.fetch_json(browser, self.ARTICLE_LIST_API % readlist_id)
+            if payload.get('code') != 0:
+                mylogger.warning(
+                    '合集文章列表异常 %s/%s：code=%s',
+                    note,
+                    readlist_id,
+                    payload.get('code'),
+                )
+                continue
+            articles = (payload.get('data') or {}).get('articles') or []
+            articles_to_scan.extend(
+                self.select_latest_articles(articles, article_limit)
+            )
+
+        links = []
+        scanned_articles = set()
+        for article in articles_to_scan:
+            article_id = str(article.get('id') or '')
+            if not article_id.isdigit() or article_id in scanned_articles:
+                continue
+            scanned_articles.add(article_id)
+            article_url = 'https://www.bilibili.com/read/cv%s' % article_id
+            if not self.should_scan_article(article_url):
+                continue
+            article_links = self.extract_links_from_detail_page(browser, article_url)
+            if article_links is None:
+                self.scan_cache_dao.save_failure(
+                    'article', article_url, base_url, note, '合集文章加载失败'
+                )
+                continue
+            self.scan_cache_dao.save_success(
+                'article', article_url, base_url, note, len(article_links)
+            )
+            links.extend(article_links)
+
+        unique_links = []
+        for link in links:
+            self.append_unique_link(unique_links, link)
+        self.dynLinks_to_db(unique_links, base_url, note)
 
     @classmethod
     def select_feed_giveaway_entries(
@@ -513,7 +778,11 @@ class SearchDynamicByUps(object):
         if not base_url:
             return
         try:
-            self.search_dynamic_links_by_up(browser, base_url, note)
+            spec = self.SOURCE_SPECS.get(note)
+            if spec and spec.get('mode') in ('readlists', 'year_readlist'):
+                self.search_readlist_source(browser, spec, note)
+            else:
+                self.search_dynamic_links_by_up(browser, base_url, note)
         except BilibiliVerificationRequired:
             raise
         except Exception as exc:
@@ -532,10 +801,13 @@ class SearchDynamicByUps(object):
         ignore_links = globals.ignore_link.split('|') if globals.ignore_link else []
         for link in dynLinks:
             normalized = self.normalize_dynamic_url(link)
-            if not normalized or any(ignored in normalized for ignored in ignore_links):
+            if not normalized or not self.is_current_dynamic_link(normalized):
+                continue
+            if any(ignored in normalized for ignored in ignore_links):
                 continue
             try:
-                if not self.draw_dynamic_dao.query_by_dyn_url(normalized):
+                existing = self.draw_dynamic_dao.query_by_dyn_url(normalized)
+                if not existing:
                     self.draw_dynamic_dao.insert(normalized, source, note)
                     cnt += 1
             except Exception as exc:

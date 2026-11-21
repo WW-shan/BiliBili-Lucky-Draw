@@ -1,7 +1,7 @@
 import unittest
 import json
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from service.bilibili_errors import BilibiliVerificationRequired, ensure_page_access
 from service.search_draw_dynamic_service.SearchDynamicByUps import SearchDynamicByUps
@@ -11,6 +11,111 @@ from utils import globals
 class SearchDynamicRegressionTests(unittest.TestCase):
     def test_regular_draw_up_is_not_used_as_an_aggregate_source(self):
         self.assertNotIn('和微论件', SearchDynamicByUps.DYNAMIC_SOURCES)
+
+    def test_select_readlists_keeps_newest_normal_and_official_family(self):
+        rows = [
+            {'id': '1', 'name': '抽奖合集②', 'articles_count': 500, 'update_time': 200},
+            {'id': '2', 'name': '抽奖合集③', 'articles_count': 500, 'update_time': 100},
+            {'id': '3', 'name': '官方抽奖合集②', 'articles_count': 500, 'update_time': 300},
+            {'id': '4', 'name': '官方抽奖合集③', 'articles_count': 289, 'update_time': 100},
+            {'id': '5', 'name': '随想随写', 'articles_count': 2, 'update_time': 999},
+        ]
+        spec = SearchDynamicByUps.SOURCE_SPECS['你的工具人老公']
+
+        selected = SearchDynamicByUps.select_readlists(spec, rows)
+
+        self.assertEqual([row['id'] for row in selected], ['2', '4'])
+
+    def test_select_readlists_supports_exact_name_and_current_year(self):
+        exact_spec = SearchDynamicByUps.SOURCE_SPECS['J君名']
+        exact_rows = [
+            {'id': '11', 'name': '抽奖', 'update_time': 1},
+            {'id': '12', 'name': '抽奖 旧', 'update_time': 999},
+        ]
+        year_spec = SearchDynamicByUps.SOURCE_SPECS['糯米是个背包']
+        year_rows = [
+            {'id': '21', 'name': '2025', 'update_time': 999},
+            {'id': '22', 'name': '2026', 'update_time': 1},
+        ]
+
+        self.assertEqual(
+            [row['id'] for row in SearchDynamicByUps.select_readlists(exact_spec, exact_rows)],
+            ['11'],
+        )
+        self.assertEqual(
+            [row['id'] for row in SearchDynamicByUps.select_readlists(year_spec, year_rows)],
+            ['22'],
+        )
+
+    def test_select_latest_articles_sorts_by_publish_time_and_limits(self):
+        rows = [
+            {'id': 1, 'publish_time': 100, 'title': 'old'},
+            {'id': 2, 'publish_time': 300, 'title': 'new'},
+            {'id': 3, 'publish_time': 200, 'title': 'middle'},
+        ]
+
+        selected = SearchDynamicByUps.select_latest_articles(rows, limit=2)
+
+        self.assertEqual([row['id'] for row in selected], [2, 3])
+
+    def test_readlist_discovery_scans_only_latest_article_and_caches_it(self):
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.scan_cache_skip_count = 0
+        scanner.scan_cache_retry_skip_count = 0
+        scanner.scan_cache_dao = Mock()
+        scanner.scan_cache_dao.has_success.return_value = False
+        scanner.scan_cache_dao.has_recent_failure.return_value = False
+        scanner.fetch_json = Mock(side_effect=[
+            {
+                'code': 0,
+                'data': {'lists': [
+                    {'id': '845787', 'name': '抽奖', 'update_time': 1},
+                ]},
+            },
+            {
+                'code': 0,
+                'data': {'articles': [
+                    {'id': 54011152, 'publish_time': 300, 'title': 'space latest'},
+                ]},
+            },
+            {
+                'code': 0,
+                'data': {'articles': [
+                    {'id': 40384169, 'publish_time': 200, 'title': 'collection'},
+                    {'id': 40384168, 'publish_time': 100, 'title': 'older'},
+                ]},
+            },
+        ])
+        scanner.extract_links_from_detail_page = Mock(side_effect=[
+            ['https://www.bilibili.com/opus/1271215276335038485'],
+            ['https://www.bilibili.com/opus/1271215276335038485'],
+        ])
+        scanner.dynLinks_to_db = Mock()
+        spec = SearchDynamicByUps.SOURCE_SPECS['J君名']
+
+        scanner.search_readlist_source(Mock(), spec, 'J君名')
+
+        self.assertEqual(
+            scanner.extract_links_from_detail_page.call_args_list,
+            [
+                call(
+                    scanner.fetch_json.call_args_list[0].args[0],
+                    'https://www.bilibili.com/read/cv54011152',
+                ),
+                call(
+                    scanner.fetch_json.call_args_list[0].args[0],
+                    'https://www.bilibili.com/read/cv40384169',
+                ),
+            ],
+        )
+        self.assertEqual(scanner.scan_cache_dao.save_success.call_count, 2)
+        scanner.dynLinks_to_db.assert_called_once_with(
+            ['https://www.bilibili.com/opus/1271215276335038485'],
+            'https://space.bilibili.com/126038161/dynamic',
+            'J君名',
+        )
 
     def test_dynamic_card_selectors_are_independent_css_selectors(self):
         selectors = SearchDynamicByUps.DYNAMIC_CARD_SELECTORS
@@ -324,6 +429,56 @@ class SearchDynamicRegressionTests(unittest.TestCase):
         )
         self.assertEqual(
             scanner.dynLinks_to_db.call_args.args[0], [giveaway_url, direct_url]
+        )
+
+    def test_existing_terminal_states_are_not_reactivated_by_rescan(self):
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.draw_dynamic_dao = Mock()
+        scanner.draw_dynamic_dao.query_by_dyn_url.side_effect = [
+            [{'status': '1'}],
+            [{'status': '2'}],
+            [{'status': '3'}],
+            [{'status': '4'}],
+            [{'status': '5'}],
+        ]
+
+        scanner.dynLinks_to_db(
+            [
+                'https://www.bilibili.com/opus/1271215276335038401',
+                'https://www.bilibili.com/opus/1271215276335038402',
+                'https://www.bilibili.com/opus/1271215276335038403',
+                'https://www.bilibili.com/opus/1271215276335038404',
+                'https://www.bilibili.com/opus/1271215276335038405',
+            ],
+            'https://space.bilibili.com/126038161/dynamic',
+            'J君名',
+        )
+
+        scanner.draw_dynamic_dao.update_sharedUrl.assert_not_called()
+        scanner.draw_dynamic_dao.insert.assert_not_called()
+
+    def test_stale_dynamic_ids_are_not_enqueued(self):
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.draw_dynamic_dao = Mock()
+        scanner.draw_dynamic_dao.query_by_dyn_url.return_value = []
+
+        scanner.dynLinks_to_db(
+            [
+                'https://t.bilibili.com/599221420391003596',
+                'https://www.bilibili.com/opus/1271215276335038485',
+            ],
+            'https://space.bilibili.com/126038161/dynamic',
+            'J君名',
+        )
+
+        scanner.draw_dynamic_dao.insert.assert_called_once_with(
+            'https://www.bilibili.com/opus/1271215276335038485',
+            'https://space.bilibili.com/126038161/dynamic',
+            'J君名',
         )
 
     def test_detail_links_are_read_in_one_javascript_snapshot(self):

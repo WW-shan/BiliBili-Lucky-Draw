@@ -48,6 +48,7 @@ class DynamicShareBase(object):
               code: payload.code,
               message: payload.message || '',
               lottery_id: data.lottery_id || '',
+              lottery_time: data.lottery_time || null,
               status: data.status,
             });
           })
@@ -147,15 +148,35 @@ class DynamicShareBase(object):
             self.machine_ip = get_host_ip()
             mylogger.info('单条动态转发--执行结束')
 
-    def verify_official_lottery(self, bro, lucky_dynamic_url):
-        """只有查到官方互动抽奖 lottery_id 才允许执行关注/评论/转发。"""
+    @staticmethod
+    def _notice_datetime(value):
+        if value is None:
+            return None
+        try:
+            timestamp = int(value)
+        except (TypeError, ValueError):
+            return None
+        if timestamp > 10_000_000_000:
+            timestamp //= 1000
+        try:
+            return str(datetime.fromtimestamp(timestamp))
+        except (OSError, OverflowError, ValueError):
+            return None
+
+    def fetch_official_lottery_notice(self, bro, lucky_dynamic_url, retries=3):
+        """返回结构化官方互动抽奖校验结果，不执行任何社交动作。"""
         match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
         if not match:
-            return False, 'invalid_dynamic_url'
+            return {
+                'confirmed': False,
+                'retryable': False,
+                'reason': 'invalid_dynamic_url',
+            }
 
         endpoint = self.LOTTERY_NOTICE_API % match.group(1)
         last_reason = 'empty_response'
-        for attempt in range(3):
+        attempts = max(1, int(retries))
+        for attempt in range(attempts):
             result = bro.execute_async_script(self.LOTTERY_NOTICE_SCRIPT, endpoint)
             if not isinstance(result, dict):
                 last_reason = 'invalid_response'
@@ -167,13 +188,38 @@ class DynamicShareBase(object):
                 code = result.get('code')
                 if code == 0 and result.get('lottery_id'):
                     self.lottery_source = 'official_notice'
-                    return True, ''
+                    return {
+                        'confirmed': True,
+                        'retryable': False,
+                        'reason': '',
+                        'lottery_id': str(result.get('lottery_id')),
+                        'lottery_end_time': self._notice_datetime(
+                            result.get('lottery_time')
+                        ),
+                        'status': result.get('status'),
+                    }
                 if code == 0:
-                    return False, 'not_lottery'
+                    return {
+                        'confirmed': False,
+                        'retryable': False,
+                        'reason': 'not_lottery',
+                        'status': result.get('status'),
+                    }
                 last_reason = 'api_code:%s' % code
-            if attempt < 2:
+            if attempt < attempts - 1:
                 time.sleep(1.5 * (attempt + 1))
-        return False, last_reason
+        return {
+            'confirmed': False,
+            'retryable': True,
+            'reason': last_reason,
+        }
+
+    def verify_official_lottery(self, bro, lucky_dynamic_url):
+        """只有查到官方互动抽奖 lottery_id 才允许执行关注/评论/转发。"""
+        result = self.fetch_official_lottery_notice(bro, lucky_dynamic_url)
+        if result.get('confirmed'):
+            return True, ''
+        return False, result.get('reason') or 'not_confirmed'
 
     @staticmethod
     def get_risk_control_evidence(text):

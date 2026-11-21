@@ -59,6 +59,25 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         webdriver.assert_not_called()
         self.assertEqual(stats['checked'], 0)
 
+    def test_newer_pending_candidate_is_verified_before_older_cooling_rows(self):
+        service = self.build_service()
+        service.draw_dao.query_by_status.side_effect = [
+            [{'dyn_url': 'https://www.bilibili.com/opus/new'}],
+            [{'dyn_url': 'https://www.bilibili.com/opus/old', 'status': '0'}],
+        ]
+        service.scan_cache_dao.has_recent_failure.side_effect = [False, True]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False,
+            'retryable': False,
+            'reason': 'not_lottery',
+        }
+
+        service.verify_pending(limit=1)
+
+        service.checker.fetch_official_lottery_notice.assert_called_once_with(
+            service.bro, 'https://www.bilibili.com/opus/new'
+        )
+
     def test_candidate_verification_starts_browser_before_fetching_notice(self):
         service = self.build_service()
         service.owns_browser = True
@@ -158,6 +177,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
     def test_action_failure_is_reverified_instead_of_being_terminal(self):
         service = self.build_service()
         service.draw_dao.query_by_status.side_effect = [
+            [],
             [],
             [{'dyn_url': 'https://www.bilibili.com/opus/9', 'status': '3'}],
         ]

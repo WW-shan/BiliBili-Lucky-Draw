@@ -91,7 +91,12 @@ def online_driver():
         chains = ActionChains(driver)
         return driver, chains
     except Exception:
-        driver.quit()
+        # Remote 创建成功后，任何后续配置异常都必须主动释放会话；
+        # 否则 Selenium 单会话槽会一直被占用，后续验证全部排队超时。
+        try:
+            driver.quit()
+        except Exception:
+            pass
         raise
 
 def init_webdriver():

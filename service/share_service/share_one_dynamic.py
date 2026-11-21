@@ -31,14 +31,15 @@ class DynamicShareBase(object):
     )
     UP_TITLE_CSS = '.bili-dyn-title__text, .bili-dyn-title'
     UP_AT_CSS = '.bili-dyn-item [data-type="at"][data-oid], .bili-dyn-content [data-type="at"][data-oid]'
-    LOTTERY_NOTICE_API = (
+    LOTTERY_NOTICE_API_TEMPLATE = (
         'https://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice'
-        '?business_type=1&business_id=%s'
+        '?business_type=%s&business_id=%s'
     )
+    LOTTERY_NOTICE_API = LOTTERY_NOTICE_API_TEMPLATE % (1, '%s')
     LOTTERY_NOTICE_SCRIPT = r'''
         const endpoint = arguments[0];
         const done = arguments[1];
-        const timer = setTimeout(() => done({timeout: true}), 15000);
+        const timer = setTimeout(() => done({timeout: true}), 8000);
         fetch(endpoint, {credentials: 'include'})
           .then(response => response.json())
           .then(payload => {
@@ -105,7 +106,7 @@ class DynamicShareBase(object):
                 if reason == 'not_lottery':
                     self.status = 4
                     self.share_status = 4
-                    mylogger.info('未查到官方互动抽奖通知，跳过url : ' + lucky_dynamic_url)
+                    mylogger.info('官方接口明确返回该动态无抽奖，排除url : ' + lucky_dynamic_url)
                     return
                 self.status = 3
                 self.share_status = 3
@@ -200,8 +201,63 @@ class DynamicShareBase(object):
         except (OSError, OverflowError, ValueError):
             return None
 
+    RESERVE_RID_PATTERN = re.compile(r'["\']rid["\']\s*:\s*["\']?(\d+)')
+
+    def _fetch_dynamic_detail_item(self, bro, lucky_dynamic_url):
+        match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
+        if not match:
+            return None
+        script = r'''
+const dynamicId = arguments[0];
+const done = arguments[1];
+const timer = setTimeout(() => done({timeout: true}), 8000);
+fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURIComponent(dynamicId), {credentials: 'include'})
+  .then(response => response.json())
+  .then(payload => { clearTimeout(timer); done(payload); })
+  .catch(error => { clearTimeout(timer); done({error: String(error)}); });
+'''
+        try:
+            result = bro.execute_async_script(script, match.group(1))
+        except Exception:
+            return None
+        if not isinstance(result, dict) or result.get('timeout') or result.get('error'):
+            return None
+        return ((result.get('data') or {}).get('item') or None)
+
+    @classmethod
+    def _extract_reserve_rid(cls, item):
+        if not isinstance(item, dict):
+            return None
+        modules = item.get('modules') or {}
+        if isinstance(modules, list):
+            module_dynamic = {}
+            for module in modules:
+                if isinstance(module, dict) and module.get('module_dynamic'):
+                    module_dynamic = module.get('module_dynamic') or {}
+                    break
+        else:
+            module_dynamic = modules.get('module_dynamic') or {}
+        additional = module_dynamic.get('additional') or {}
+        reserve = additional.get('reserve') or {}
+        rid = reserve.get('rid')
+        if rid:
+            return str(rid)
+        try:
+            serialized = str(item)
+        except Exception:
+            return None
+        match = cls.RESERVE_RID_PATTERN.search(serialized)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _notice_endpoint(business_id, business_type):
+        return (
+            DynamicShareBase.LOTTERY_NOTICE_API_TEMPLATE
+            % (business_type, business_id)
+        )
+
     def fetch_official_lottery_notice(self, bro, lucky_dynamic_url, retries=3):
-        """返回结构化官方互动抽奖校验结果，不执行任何社交动作。"""
+        """返回结构化官方抽奖校验结果，不执行任何社交动作。"""
         match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
         if not match:
             return {
@@ -210,44 +266,60 @@ class DynamicShareBase(object):
                 'reason': 'invalid_dynamic_url',
             }
 
-        endpoint = self.LOTTERY_NOTICE_API % match.group(1)
+        dynamic_id = match.group(1)
+        # 互动抽奖固定 business_type=1；预约抽奖需要先解析 reserve.rid，
+        # 再用 business_type=10 查询。不能把这两种查询混成一个参数。
+        item = self._fetch_dynamic_detail_item(bro, lucky_dynamic_url)
+        reserve_rid = self._extract_reserve_rid(item)
+        # 互动抽奖先查 business_type=1；预约抽奖必须使用 reserve.rid。
+        # 不应在详情接口失败时用动态 ID 冒充预约业务 ID 重复查询。
+        requests = [(1, dynamic_id)]
+        if reserve_rid:
+            requests.append((10, reserve_rid))
+
         last_reason = 'empty_response'
         attempts = max(1, int(retries))
-        for attempt in range(attempts):
-            result = bro.execute_async_script(self.LOTTERY_NOTICE_SCRIPT, endpoint)
-            if not isinstance(result, dict):
-                last_reason = 'invalid_response'
-            elif result.get('timeout'):
-                last_reason = 'timeout'
-            elif result.get('error'):
-                last_reason = 'request_error'
-            else:
-                code = result.get('code')
-                if code == 0 and result.get('lottery_id'):
-                    self.lottery_source = 'official_notice'
-                    self.notice_lottery_time = self._coerce_datetime(
-                        result.get('lottery_time')
-                    )
-                    return {
-                        'confirmed': True,
-                        'retryable': False,
-                        'reason': '',
-                        'lottery_id': str(result.get('lottery_id')),
-                        'lottery_end_time': self._notice_datetime(
+        for candidate_type, candidate_id in requests:
+            endpoint = self._notice_endpoint(candidate_id, candidate_type)
+            for attempt in range(attempts):
+                result = bro.execute_async_script(self.LOTTERY_NOTICE_SCRIPT, endpoint)
+                if not isinstance(result, dict):
+                    last_reason = 'invalid_response'
+                elif result.get('timeout'):
+                    last_reason = 'timeout'
+                    break
+                elif result.get('error'):
+                    last_reason = 'request_error'
+                    break
+                else:
+                    code = result.get('code')
+                    if code == 0 and result.get('lottery_id'):
+                        self.lottery_source = 'official_notice'
+                        self.notice_lottery_time = self._coerce_datetime(
                             result.get('lottery_time')
-                        ),
-                        'status': result.get('status'),
-                    }
-                if code == 0:
-                    return {
-                        'confirmed': False,
-                        'retryable': False,
-                        'reason': 'not_lottery',
-                        'status': result.get('status'),
-                    }
-                last_reason = 'api_code:%s' % code
-            if attempt < attempts - 1:
-                time.sleep(1.5 * (attempt + 1))
+                        )
+                        return {
+                            'confirmed': True,
+                            'retryable': False,
+                            'reason': '',
+                            'lottery_id': str(result.get('lottery_id')),
+                            'lottery_business_type': candidate_type,
+                            'lottery_business_id': candidate_id,
+                            'lottery_end_time': self._notice_datetime(
+                                result.get('lottery_time')
+                            ),
+                            'status': result.get('status'),
+                        }
+                    if code == 0:
+                        # code=0 但没有 lottery_id 不足以证明“不是抽奖”；
+                        # 官方接口可能正常返回空 data，保留为未知并继续尝试其它业务类型。
+                        last_reason = 'code0_without_lottery_id'
+                        break
+                    last_reason = 'api_code:%s' % code
+                if attempt < attempts - 1:
+                    time.sleep(0.4 * (attempt + 1))
+            if last_reason == 'code0_without_lottery_id':
+                continue
         return {
             'confirmed': False,
             'retryable': True,

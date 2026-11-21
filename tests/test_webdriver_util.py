@@ -23,6 +23,17 @@ class WebDriverOptionsTests(unittest.TestCase):
             globals.selenium_script_timeout
         )
 
+    @patch('utils.webdriver_util.webdriver.Remote')
+    def test_online_driver_cleans_up_when_timeout_configuration_fails(self, remote):
+        driver = Mock()
+        remote.return_value = driver
+        driver.set_page_load_timeout.side_effect = RuntimeError('timeout config failed')
+
+        with self.assertRaises(RuntimeError):
+            online_driver()
+
+        driver.quit.assert_called_once_with()
+
     def test_wait_for_page_load_accepts_interactive_document(self):
         class ReadyBrowser:
             def execute_script(self, script):

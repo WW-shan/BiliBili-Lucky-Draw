@@ -53,6 +53,19 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertEqual(share.share_status, 0)
         self.assertEqual(share.share_url, 'https://www.bilibili.com/opus/123')
 
+    def test_detail_fetch_has_hard_timeout(self):
+        browser = Mock()
+        browser.set_script_timeout.side_effect = Exception('must not change global timeout')
+        browser.execute_async_script.return_value = {'timeout': True}
+        share = DynamicShareBase()
+
+        result = share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        self.assertIsNone(result)
+        self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
+
     def test_preverified_expired_lottery_stops_before_page_time_parsing_or_actions(self):
         share = DynamicShareBase()
         with patch.object(share, 'wait_page_ready'), patch.object(
@@ -78,6 +91,94 @@ class ShareOneDynamicTests(unittest.TestCase):
         click_like.assert_not_called()
         click_share.assert_not_called()
         self.assertEqual(share.share_status, 2)
+
+    def test_reserve_lottery_uses_rid_and_business_type_10(self):
+        browser = Mock()
+        browser.get_cookies.return_value = [
+            {'name': 'bili_jct', 'value': 'csrf-token'},
+        ]
+        browser.execute_async_script.side_effect = [
+            {'code': 0, 'data': {'item': {'modules': {'module_dynamic': {
+                'additional': {'reserve': {'rid': '987654321'}},
+            }}}}},
+            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
+            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
+            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
+            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
+            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
+            {'code': 0, 'message': '', 'lottery_id': '777', 'lottery_time': 2099999999, 'status': 0},
+        ]
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1273146113244790787'
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['lottery_id'], '777')
+        self.assertIn(
+            'business_type=10', browser.execute_async_script.call_args_list[-1].args[1]
+        )
+        self.assertIn(
+            'business_id=987654321', browser.execute_async_script.call_args_list[-1].args[1]
+        )
+
+    def test_notice_api_timeout_is_retryable(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {'timeout': True}
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=1
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['retryable'])
+        self.assertIn('timeout', result['reason'])
+
+    def test_notice_api_has_short_fetch_timeout(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {'timeout': True}
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=1
+        )
+
+        self.assertTrue(result['retryable'])
+        self.assertIn('8000', browser.execute_async_script.call_args.args[0])
+        self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
+
+    def test_zero_without_lottery_id_is_unknown_not_explicit_non_lottery(self):
+        browser = Mock()
+        browser.execute_async_script.side_effect = [
+            {'code': 0, 'data': {'item': {}}},
+            {'code': 0, 'message': '', 'lottery_id': '', 'status': None},
+        ]
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['retryable'])
+        self.assertNotEqual(result['reason'], 'not_lottery')
+
+    def test_confirmed_activity_notice_is_not_treated_as_not_lottery(self):
+        browser = Mock()
+        browser.execute_async_script.side_effect = [
+            {'code': 0, 'data': {'item': {}}},
+            {'code': 0, 'message': '', 'lottery_id': '999', 'lottery_time': 2099999999, 'status': 0},
+        ]
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['lottery_id'], '999')
 
     def test_unconfirmed_lottery_stops_before_any_social_action(self):
         share = DynamicShareBase()

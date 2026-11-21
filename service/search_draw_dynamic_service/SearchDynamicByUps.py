@@ -45,9 +45,11 @@ class SearchDynamicByUps(object):
     DYNAMIC_SOURCES = {
         '你的工具人老公': 'https://space.bilibili.com/100680137/dynamic',
         '_大锦鲤_': 'https://space.bilibili.com/226257459/dynamic',
-        'Carcinus_': 'https://space.bilibili.com/27332255/dynamic',
-        '闻不着味': 'https://space.bilibili.com/280025263/dynamic',
+        'J君名': 'https://space.bilibili.com/126038161/dynamic',
+        '糯米是个背包': 'https://space.bilibili.com/492426375/dynamic',
+        '抽奖工具人转发池': 'https://space.bilibili.com/280604312/dynamic',
     }
+    FORWARD_POOL_SOURCES = frozenset({'抽奖工具人转发池'})
     GIVEAWAY_MARKERS = ('抽奖', '福利', '奖品', '抽取', '有奖', '中奖')
     FEED_ITEM_MAX_AGE_DAYS = 31
     FEED_API_TEMPLATE = (
@@ -82,6 +84,11 @@ class SearchDynamicByUps(object):
             const items = ((payload.data || {}).items || []).map(item => {
               const modules = item.modules || {};
               const author = modules.module_author || {};
+              const major = (modules.module_dynamic || {}).major || {};
+              const original = item.orig || {};
+              const originalModules = original.modules || {};
+              const originalAuthor = originalModules.module_author || {};
+              const originalMajor = (originalModules.module_dynamic || {}).major || {};
               const texts = [];
               collect(modules.module_dynamic || {}, texts, 0);
               if (item.orig && item.orig.modules) {
@@ -93,6 +100,13 @@ class SearchDynamicByUps(object):
                 author: author.name || '',
                 pub_ts: author.pub_ts || null,
                 text: Array.from(new Set(texts)).join(' ').slice(0, 1600),
+                major_type: major.type || '',
+                has_draw: Boolean(major.draw),
+                orig_id: String(original.id_str || original.id || ''),
+                orig_type: original.type || '',
+                orig_pub_ts: originalAuthor.pub_ts || null,
+                orig_major_type: originalMajor.type || '',
+                orig_has_draw: Boolean(originalMajor.draw),
               };
             });
             done({code: payload.code, message: payload.message, items: items});
@@ -165,6 +179,15 @@ class SearchDynamicByUps(object):
             if len(selected) >= self.MAX_DETAIL_PAGES_PER_SOURCE:
                 break
         return selected
+
+    def select_latest_detail_entry(self, entries):
+        """只检查最新合集；已扫描则等待下一篇，不回头扫历史积压。"""
+        if not entries:
+            return []
+        latest = entries[0]
+        if not self.should_scan_detail_page(latest['url']):
+            return []
+        return [latest]
 
     @staticmethod
     def is_verification_block(status_code=None, page_title='', page_text=''):
@@ -258,7 +281,13 @@ class SearchDynamicByUps(object):
         return result
 
     @classmethod
-    def select_feed_giveaway_entries(cls, snapshot, now=None):
+    def select_feed_giveaway_entries(
+        cls,
+        snapshot,
+        now=None,
+        allow_direct_draw=True,
+        allow_forward=True,
+    ):
         now = now or datetime.now()
         cutoff = now - timedelta(days=cls.FEED_ITEM_MAX_AGE_DAYS)
         entries = []
@@ -267,18 +296,40 @@ class SearchDynamicByUps(object):
             if not isinstance(item, dict):
                 continue
             item_id = str(item.get('id') or '').strip()
-            if not item_id.isdigit():
-                continue
             try:
                 publish_time = datetime.fromtimestamp(int(item.get('pub_ts')))
             except (TypeError, ValueError, OSError, OverflowError):
                 continue
             if publish_time < cutoff or publish_time > now + timedelta(days=1):
                 continue
-            text = str(item.get('text') or '').casefold()
-            if not any(marker.casefold() in text for marker in cls.GIVEAWAY_MARKERS):
-                continue
+
             item_type = str(item.get('type') or '')
+            major_type = str(item.get('major_type') or '')
+            has_draw = bool(item.get('has_draw'))
+            source_is_forward = item_type == 'DYNAMIC_TYPE_FORWARD'
+            if item_type == 'DYNAMIC_TYPE_FORWARD':
+                if not allow_forward:
+                    continue
+                item_id = str(item.get('orig_id') or '').strip()
+                item_type = str(item.get('orig_type') or '')
+                major_type = str(item.get('orig_major_type') or '')
+                has_draw = bool(item.get('orig_has_draw'))
+            if not item_id.isdigit():
+                continue
+
+            if (
+                not allow_direct_draw
+                and not source_is_forward
+                and item_type != 'DYNAMIC_TYPE_ARTICLE'
+            ):
+                continue
+
+            text = str(item.get('text') or '').casefold()
+            has_giveaway_marker = any(
+                marker.casefold() in text for marker in cls.GIVEAWAY_MARKERS
+            )
+            if not has_giveaway_marker and not has_draw and major_type != 'MAJOR_TYPE_DRAW':
+                continue
             if item_type == 'DYNAMIC_TYPE_ARTICLE':
                 kind = 'detail'
             elif item_type in ('DYNAMIC_TYPE_AV', 'DYNAMIC_TYPE_FORWARD'):
@@ -417,10 +468,15 @@ class SearchDynamicByUps(object):
             self._open_page(browser, base_url)
             snapshot = self.extract_feed_snapshot_from_api(browser, up_id)
 
-        giveaway_entries = self.select_feed_giveaway_entries(snapshot)
+        source_is_forward_pool = note in self.FORWARD_POOL_SOURCES
+        giveaway_entries = self.select_feed_giveaway_entries(
+            snapshot,
+            allow_direct_draw=False,
+            allow_forward=source_is_forward_pool,
+        )
         detail_entries = [entry for entry in giveaway_entries if entry['kind'] == 'detail']
         direct_entries = [entry for entry in giveaway_entries if entry['kind'] == 'direct']
-        selected_details = self.select_detail_entries_to_scan(detail_entries)
+        selected_details = self.select_latest_detail_entry(detail_entries)
         links = []
         for entry in selected_details:
             detail_links = self.extract_links_from_detail_page(browser, entry['url'])

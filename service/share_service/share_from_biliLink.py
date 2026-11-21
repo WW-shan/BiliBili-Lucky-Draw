@@ -96,6 +96,11 @@ class BiliLinkShare(object):
                         url=lucky_dynamic_url, status=2
                     )
                     continue
+                if dyn.share_status == 4:
+                    self.draw_dynamic_dao.update_sharedUrl(
+                        url=lucky_dynamic_url, status=4
+                    )
+                    continue
                 # 保存转发状态和关注的up主信息
                 if dyn.share_status == 0:
                     self.draw_dynamic_dao.update_sharedUrl(url=lucky_dynamic_url, status=1)

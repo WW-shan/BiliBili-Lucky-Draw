@@ -19,9 +19,17 @@ class DrawDynamicDao(object):
 
     def query_by_status(self, status=0, limit=2000, newest_first=False):
         try:
-            order = " desc" if newest_first else ""
-            sql = ("SELECT * FROM " + self.table_name + " where status = '" + str(status) + "'"
-                   + " order by insert_time" + order)
+            if newest_first:
+                order = (
+                    " order by cast(substring_index(dyn_url, '/', -1) as unsigned) desc,"
+                    " insert_time desc"
+                )
+            else:
+                order = " order by insert_time"
+            sql = (
+                "SELECT * FROM " + self.table_name
+                + " where status = '" + str(status) + "'" + order
+            )
             if limit is not None and int(limit) > 0:
                 sql = sql + " limit " + str(int(limit))
             return self.db.select_db(sql)

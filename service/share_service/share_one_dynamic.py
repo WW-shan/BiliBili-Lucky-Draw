@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -30,6 +31,31 @@ class DynamicShareBase(object):
     )
     UP_TITLE_CSS = '.bili-dyn-title__text, .bili-dyn-title'
     UP_AT_CSS = '.bili-dyn-item [data-type="at"][data-oid], .bili-dyn-content [data-type="at"][data-oid]'
+    LOTTERY_NOTICE_API = (
+        'https://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice'
+        '?business_type=1&business_id=%s'
+    )
+    LOTTERY_NOTICE_SCRIPT = r'''
+        const endpoint = arguments[0];
+        const done = arguments[1];
+        const timer = setTimeout(() => done({timeout: true}), 15000);
+        fetch(endpoint, {credentials: 'include'})
+          .then(response => response.json())
+          .then(payload => {
+            clearTimeout(timer);
+            const data = payload.data || {};
+            done({
+              code: payload.code,
+              message: payload.message || '',
+              lottery_id: data.lottery_id || '',
+              status: data.status,
+            });
+          })
+          .catch(error => {
+            clearTimeout(timer);
+            done({error: String(error)});
+          });
+    '''
 
     def __init__(self):
         # 公有属性，可以在类外部访问
@@ -62,6 +88,17 @@ class DynamicShareBase(object):
             bro.get(lucky_dynamic_url)
             self.wait_page_ready(bro)
             self.share_url = lucky_dynamic_url
+            confirmed, reason = self.verify_official_lottery(bro, lucky_dynamic_url)
+            if not confirmed:
+                if reason == 'not_lottery':
+                    self.status = 4
+                    self.share_status = 4
+                    mylogger.info('未查到官方互动抽奖通知，跳过url : ' + lucky_dynamic_url)
+                    return
+                self.status = 3
+                self.share_status = 3
+                self.last_error = '无法确认官方互动抽奖：' + reason
+                return
             self.resolve_lottery_time(bro)
             if self.is_expired_dynamic(bro):
                 self.status = 2
@@ -109,6 +146,34 @@ class DynamicShareBase(object):
             self.share_time = str(datetime.now())
             self.machine_ip = get_host_ip()
             mylogger.info('单条动态转发--执行结束')
+
+    def verify_official_lottery(self, bro, lucky_dynamic_url):
+        """只有查到官方互动抽奖 lottery_id 才允许执行关注/评论/转发。"""
+        match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
+        if not match:
+            return False, 'invalid_dynamic_url'
+
+        endpoint = self.LOTTERY_NOTICE_API % match.group(1)
+        last_reason = 'empty_response'
+        for attempt in range(3):
+            result = bro.execute_async_script(self.LOTTERY_NOTICE_SCRIPT, endpoint)
+            if not isinstance(result, dict):
+                last_reason = 'invalid_response'
+            elif result.get('timeout'):
+                last_reason = 'timeout'
+            elif result.get('error'):
+                last_reason = 'request_error'
+            else:
+                code = result.get('code')
+                if code == 0 and result.get('lottery_id'):
+                    self.lottery_source = 'official_notice'
+                    return True, ''
+                if code == 0:
+                    return False, 'not_lottery'
+                last_reason = 'api_code:%s' % code
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+        return False, last_reason
 
     @staticmethod
     def get_risk_control_evidence(text):

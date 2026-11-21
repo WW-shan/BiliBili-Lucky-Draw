@@ -150,6 +150,36 @@ class BiliLinkShareTests(unittest.TestCase):
         )
         service.share_info_dao.insert_shareInfo.assert_not_called()
 
+    def test_unconfirmed_lottery_is_excluded_without_share_record(self):
+        service = self.build_service()
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+        dynamic = Mock()
+        dynamic.share_status = 4
+        dynamic.status = 4
+        dynamic.last_error = None
+
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase',
+            return_value=dynamic,
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_share_content',
+            return_value='share',
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_comment_content',
+            return_value='comment',
+        ):
+            service.do_share_by_links()
+
+        service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/123', status=4
+        )
+        service.share_info_dao.insert_shareInfo.assert_not_called()
+
     def test_non_risk_failure_is_not_retried_every_cycle(self):
         service = self.build_service()
         service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []

@@ -16,7 +16,11 @@ class DrawDynamicDaoTests(unittest.TestCase):
         sql = db.select_db.call_args.args[0].lower()
         self.assertTrue(sql.startswith('select * from t_draw_dynamic'))
         self.assertIn("status = '0'", sql)
-        self.assertIn('order by insert_time desc', sql)
+        self.assertIn(
+            "order by cast(substring_index(dyn_url, '/', -1) as unsigned) desc, "
+            'insert_time desc',
+            sql,
+        )
         self.assertIn('limit 3', sql)
 
 

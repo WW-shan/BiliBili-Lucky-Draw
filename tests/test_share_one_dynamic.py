@@ -20,6 +20,8 @@ class ShareOneDynamicTests(unittest.TestCase):
         with patch.object(share, 'wait_page_ready'), patch.object(
             share, 'resolve_lottery_time'
         ), patch.object(share, 'is_expired_dynamic', return_value=False), patch.object(
+            share, 'verify_official_lottery', return_value=(True, '')
+        ), patch.object(
             share, 'ensure_publish_cookie'
         ) as ensure_publish_cookie, patch.object(
             share, 'click_follow_all'
@@ -50,6 +52,26 @@ class ShareOneDynamicTests(unittest.TestCase):
         click_share.assert_called_once_with(browser, chains, 'share')
         self.assertEqual(share.share_status, 0)
         self.assertEqual(share.share_url, 'https://www.bilibili.com/opus/123')
+
+    def test_unconfirmed_lottery_stops_before_any_social_action(self):
+        share = DynamicShareBase()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'verify_official_lottery', return_value=(False, 'not_lottery')
+        ), patch.object(share, 'click_follow_all') as click_follow, patch.object(
+            share, 'click_like'
+        ) as click_like, patch.object(share, 'commit_comment') as commit_comment, patch.object(
+            share, 'click_share'
+        ) as click_share:
+            share.share_one(
+                Mock(), Mock(), 'https://www.bilibili.com/opus/123', 'share', 'comment'
+            )
+
+        click_follow.assert_not_called()
+        click_like.assert_not_called()
+        commit_comment.assert_not_called()
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 4)
+        self.assertIsNone(share.last_error)
 
     def test_verification_block_stops_before_any_dynamic_action(self):
         share = DynamicShareBase()

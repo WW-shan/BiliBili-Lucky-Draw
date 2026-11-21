@@ -9,6 +9,9 @@ from utils import globals
 
 
 class SearchDynamicRegressionTests(unittest.TestCase):
+    def test_regular_draw_up_is_not_used_as_an_aggregate_source(self):
+        self.assertNotIn('和微论件', SearchDynamicByUps.DYNAMIC_SOURCES)
+
     def test_dynamic_card_selectors_are_independent_css_selectors(self):
         selectors = SearchDynamicByUps.DYNAMIC_CARD_SELECTORS
 
@@ -87,6 +90,22 @@ class SearchDynamicRegressionTests(unittest.TestCase):
 
         self.assertEqual(selected, entries[2:4])
         self.assertEqual(scanner.scan_cache_skip_count, 2)
+
+    def test_latest_article_is_not_advanced_to_older_backlog(self):
+        entries = [
+            {'url': 'https://www.bilibili.com/opus/1272441798722060296'},
+            {'url': 'https://www.bilibili.com/opus/1272047404752830466'},
+        ]
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.scan_cache_skip_count = 0
+        scanner.scan_cache_retry_skip_count = 0
+        scanner.scan_cache_dao = Mock()
+        scanner.scan_cache_dao.has_success.return_value = True
+
+        selected = scanner.select_latest_detail_entry(entries)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(scanner.scan_cache_skip_count, 1)
 
     def test_successfully_scanned_detail_page_is_skipped(self):
         scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
@@ -168,6 +187,113 @@ class SearchDynamicRegressionTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]['url'], 'https://www.bilibili.com/opus/1270000000000000001')
         self.assertEqual(entries[0]['kind'], 'detail')
+
+    def test_feed_snapshot_accepts_recent_textless_draw_post(self):
+        now = datetime(2026, 11, 20, 12, 0, 0)
+        snapshot = {
+            'code': 0,
+            'items': [
+                {
+                    'id': '1270000000000000002',
+                    'type': 'DYNAMIC_TYPE_DRAW',
+                    'major_type': 'MAJOR_TYPE_DRAW',
+                    'has_draw': True,
+                    'pub_ts': str(int((now - timedelta(days=1)).timestamp())),
+                    'text': '',
+                },
+            ],
+        }
+
+        entries = SearchDynamicByUps.select_feed_giveaway_entries(snapshot, now=now)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['kind'], 'direct')
+
+    def test_feed_snapshot_uses_original_dynamic_from_forward_pool(self):
+        now = datetime(2026, 11, 20, 12, 0, 0)
+        snapshot = {
+            'code': 0,
+            'items': [
+                {
+                    'id': '1272785254350848003',
+                    'type': 'DYNAMIC_TYPE_FORWARD',
+                    'pub_ts': str(int((now - timedelta(minutes=5)).timestamp())),
+                    'text': '转发动态',
+                    'major_type': '',
+                    'has_draw': False,
+                    'orig_id': '1272768482539208721',
+                    'orig_type': 'DYNAMIC_TYPE_DRAW',
+                    'orig_major_type': 'MAJOR_TYPE_DRAW',
+                    'orig_has_draw': True,
+                },
+            ],
+        }
+
+        entries = SearchDynamicByUps.select_feed_giveaway_entries(snapshot, now=now)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(
+            entries[0]['url'],
+            'https://www.bilibili.com/opus/1272768482539208721',
+        )
+        self.assertEqual(entries[0]['kind'], 'direct')
+
+    def test_article_source_skips_aggregator_own_draw_card(self):
+        now = datetime(2026, 11, 20, 12, 0, 0)
+        snapshot = {
+            'code': 0,
+            'items': [
+                {
+                    'id': '1272793337515999241',
+                    'type': 'DYNAMIC_TYPE_DRAW',
+                    'major_type': 'MAJOR_TYPE_DRAW',
+                    'has_draw': True,
+                    'pub_ts': str(int((now - timedelta(hours=1)).timestamp())),
+                    'text': '',
+                },
+            ],
+        }
+
+        entries = SearchDynamicByUps.select_feed_giveaway_entries(
+            snapshot, now=now, allow_direct_draw=False, allow_forward=False
+        )
+
+        self.assertEqual(entries, [])
+
+    def test_forward_pool_skips_own_draw_and_keeps_forwarded_origin(self):
+        now = datetime(2026, 11, 20, 12, 0, 0)
+        snapshot = {
+            'code': 0,
+            'items': [
+                {
+                    'id': '1272793337515999241',
+                    'type': 'DYNAMIC_TYPE_DRAW',
+                    'major_type': 'MAJOR_TYPE_DRAW',
+                    'has_draw': True,
+                    'pub_ts': str(int((now - timedelta(hours=2)).timestamp())),
+                    'text': '',
+                },
+                {
+                    'id': '1272785254350848003',
+                    'type': 'DYNAMIC_TYPE_FORWARD',
+                    'pub_ts': str(int((now - timedelta(minutes=5)).timestamp())),
+                    'text': '转发动态',
+                    'orig_id': '1272768482539208721',
+                    'orig_type': 'DYNAMIC_TYPE_DRAW',
+                    'orig_major_type': 'MAJOR_TYPE_DRAW',
+                    'orig_has_draw': True,
+                },
+            ],
+        }
+
+        entries = SearchDynamicByUps.select_feed_giveaway_entries(
+            snapshot, now=now, allow_direct_draw=False, allow_forward=True
+        )
+
+        self.assertEqual(
+            [entry['url'] for entry in entries],
+            ['https://www.bilibili.com/opus/1272768482539208721'],
+        )
 
     def test_feed_scan_opens_recent_detail_and_enqueues_resolved_links(self):
         giveaway_url = 'https://t.bilibili.com/123'

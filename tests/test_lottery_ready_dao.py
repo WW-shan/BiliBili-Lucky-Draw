@@ -29,6 +29,22 @@ class LotteryReadyDaoTests(unittest.TestCase):
         self.assertIn('on duplicate key update', sql)
         self.assertIn('lottery_id', sql)
 
+    def test_upsert_accepts_plain_text_lottery_without_lottery_id(self):
+        db = Mock()
+        dao = LotteryReadyDao(db)
+        db.executeCommit.reset_mock()
+
+        dao.upsert(
+            'https://www.bilibili.com/opus/123',
+            '',
+            lottery_kind='plain_text',
+            lottery_rule='{"action": "forward"}',
+        )
+
+        sql = db.executeCommit.call_args.args[0].lower()
+        self.assertIn('plain_text', sql)
+        self.assertIn('{"action": "forward"}', sql)
+
     def test_query_ready_uses_verified_status_and_expiry_order(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]

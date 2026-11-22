@@ -141,6 +141,8 @@ class BiliLinkShareTests(unittest.TestCase):
             'share',
             'comment',
             lottery_end_time='2026-11-25 20:00:00',
+            lottery_kind='official',
+            lottery_rule=None,
         )
         service.share_info_dao.insert_shareInfo.assert_called_once_with(dynamic)
         service.follow_up_dao.saverUpdate.assert_called_once_with(

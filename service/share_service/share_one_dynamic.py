@@ -87,6 +87,8 @@ class DynamicShareBase(object):
         share_content,
         comment_content,
         lottery_end_time=None,
+        lottery_kind='official',
+        lottery_rule=None,
     ):
         """
         提供需要转发的抽奖动态URL，然后“执行状态、up主的ID、up主的主页URL”等信息
@@ -101,17 +103,22 @@ class DynamicShareBase(object):
             bro.get(lucky_dynamic_url)
             self.wait_page_ready(bro)
             self.share_url = lucky_dynamic_url
-            confirmed, reason = self.verify_official_lottery(bro, lucky_dynamic_url)
-            if not confirmed:
-                if reason == 'not_lottery':
-                    self.status = 4
-                    self.share_status = 4
-                    mylogger.info('官方接口明确返回该动态无抽奖，排除url : ' + lucky_dynamic_url)
+            if lottery_kind == 'plain_text':
+                # 普通动态抽奖没有官方 lottery_id，规则已在验证阶段保存。
+                self.lottery_source = 'plain_text'
+                self.notice_lottery_time = self._coerce_datetime(lottery_end_time)
+            else:
+                confirmed, reason = self.verify_official_lottery(bro, lucky_dynamic_url)
+                if not confirmed:
+                    if reason == 'not_lottery':
+                        self.status = 4
+                        self.share_status = 4
+                        mylogger.info('官方接口明确返回该动态无抽奖，排除url : ' + lucky_dynamic_url)
+                        return
+                    self.status = 3
+                    self.share_status = 3
+                    self.last_error = '无法确认官方互动抽奖：' + reason
                     return
-                self.status = 3
-                self.share_status = 3
-                self.last_error = '无法确认官方互动抽奖：' + reason
-                return
             if self.notice_lottery_time is not None:
                 self.lottery_time = self.notice_lottery_time
             if self.lottery_time is None:
@@ -227,6 +234,90 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         return ((result.get('data') or {}).get('item') or None)
 
     @staticmethod
+    def _dynamic_item_text(item):
+        if not isinstance(item, dict):
+            return ''
+        modules = item.get('modules') or {}
+        if isinstance(modules, list):
+            module_dynamic = {}
+            for module in modules:
+                if isinstance(module, dict) and module.get('module_dynamic'):
+                    module_dynamic = module.get('module_dynamic') or {}
+                    break
+        else:
+            module_dynamic = modules.get('module_dynamic') or {}
+        desc = module_dynamic.get('desc') or {}
+        nodes = desc.get('rich_text_nodes') or []
+        text = ' '.join(
+            str(node.get('text') or '')
+            for node in nodes
+            if isinstance(node, dict)
+        )
+        if text.strip():
+            return text
+        return str(desc.get('text') or '')
+
+    @classmethod
+    def classify_lottery_item(cls, item):
+        """Classify an item by explicit giveaway evidence, not keywords alone."""
+        text = cls._dynamic_item_text(item)
+        normalized = re.sub(r'\s+', '', text)
+        result = {
+            'confirmed': False,
+            'kind': 'not_lottery',
+            'action': None,
+            'reason': '',
+            'text': text,
+        }
+        if not normalized:
+            return result
+
+        result_words = (
+            '中奖名单', '获奖名单', '开奖名单', '抽奖结果', '开奖结果',
+            '恭喜获奖', '获奖公告', '已开奖', '中奖公布',
+        )
+        if any(word in normalized for word in result_words):
+            result.update(kind='result_or_notice', reason='result_announcement')
+            return result
+
+        context_words = (
+            '抽奖合集', '合集更新', '上期传送门', '本期完', '往期',
+            '关注我', '求关注', '广告', '购买', '商城', '优惠券',
+        )
+        if any(word in normalized for word in context_words):
+            result.update(kind='context_or_ad', reason='collection_or_ad')
+            return result
+
+        giveaway_words = ('抽', '揪', '送', '赠', '福利', '奖品', '有奖')
+        prize_words = ('元', '礼包', '奖品', '名额', '红包', '礼物', '门票', '周边', '卡', '券', '位')
+        action_words = ('关注', '转发', '评论', '点赞', '预约', '参与', '@')
+        date_words = ('开奖', '截止', '日期', '月', '日', '时间')
+        if not any(word in normalized for word in giveaway_words):
+            return result
+        if not any(word in normalized for word in prize_words):
+            result.update(kind='suspected_giveaway', reason='missing_prize')
+            return result
+        if not any(word in normalized for word in action_words):
+            result.update(kind='suspected_giveaway', reason='missing_action')
+            return result
+        if not any(word in normalized for word in date_words):
+            result.update(kind='suspected_giveaway', reason='missing_concrete_time')
+            return result
+
+        if '预约' in normalized:
+            action = 'reserve'
+        elif '评论' in normalized and '转发' in normalized:
+            action = 'forward'
+        elif '转发' in normalized:
+            action = 'forward'
+        elif '关注' in normalized:
+            action = 'follow'
+        else:
+            action = 'forward'
+        result.update(confirmed=True, kind='plain_text_lottery', action=action, reason='verified_text_rules')
+        return result
+
+    @staticmethod
     def _has_official_lottery_component(item):
         if not isinstance(item, dict):
             return False
@@ -292,12 +383,23 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         # 互动抽奖固定 business_type=1；预约抽奖需要先解析 reserve.rid，
         # 再用 business_type=10 查询。不能把这两种查询混成一个参数。
         item = self._fetch_dynamic_detail_item(bro, lucky_dynamic_url)
-        if isinstance(item, dict) and not self._has_official_lottery_component(item):
-            return {
-                'confirmed': False,
-                'retryable': False,
-                'reason': 'not_official_lottery',
-            }
+        classification = self.classify_lottery_item(item)
+        has_official_component = self._has_official_lottery_component(item)
+        if isinstance(item, dict) and not has_official_component:
+            if classification.get('confirmed'):
+                self.lottery_source = 'plain_text'
+                return {
+                    'confirmed': True,
+                    'retryable': False,
+                    'reason': '',
+                    'source': 'plain_text',
+                    'lottery_rule': classification,
+                    'lottery_id': '',
+                    'lottery_end_time': None,
+                    'status': None,
+                }
+            # 详情里没有官方组件时，不能仅凭关键词判断不是抽奖；
+            # 仍保留一次接口查询，避免把普通互动抽奖或接口隐藏组件漏掉。
         reserve_rid = self._extract_reserve_rid(item)
         # 互动抽奖先查 business_type=1；预约抽奖必须使用 reserve.rid。
         # 不应在详情接口失败时用动态 ID 冒充预约业务 ID 重复查询。

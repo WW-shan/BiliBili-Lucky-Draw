@@ -153,8 +153,49 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIn('8000', browser.execute_async_script.call_args.args[0])
         self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
 
-    def test_non_official_text_giveaway_is_excluded_before_notice_retries(self):
+    def test_plain_text_giveaway_with_rules_is_confirmed_without_official_component(self):
+        item = {
+            'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发本条动态，12月5日抽取3位粉丝，每人送出一份零食礼包，评论也可参与。'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }},
+        }
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertEqual(result['action'], 'forward')
+        self.assertEqual(result['kind'], 'plain_text_lottery')
+        self.assertTrue(result['confirmed'])
+
+    def test_plain_text_giveaway_without_a_concrete_date_is_not_confirmed(self):
+        item = {
+            'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，抽取3位粉丝送上礼包。'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }},
+        }
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'missing_concrete_time')
+
+    def test_giveaway_result_announcement_is_not_participable(self):
+        item = {
+            'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '上次抽奖中奖名单公布，恭喜以下3位粉丝，开奖时间11月20日。'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }},
+        }
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['kind'], 'result_or_notice')
+
+    def test_incomplete_text_giveaway_is_reviewed_not_auto_executed(self):
         browser = Mock()
+        unknown = {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None}
         browser.execute_async_script.side_effect = [
             {'code': 0, 'data': {'item': {'modules': {'module_dynamic': {
                 'desc': {'rich_text_nodes': [
@@ -162,6 +203,7 @@ class ShareOneDynamicTests(unittest.TestCase):
                 ]},
                 'major': {'type': 'MAJOR_TYPE_OPUS'},
             }}}}},
+            unknown, unknown, unknown, unknown, unknown, unknown,
         ]
         share = DynamicShareBase()
 
@@ -170,9 +212,30 @@ class ShareOneDynamicTests(unittest.TestCase):
         )
 
         self.assertFalse(result['confirmed'])
-        self.assertFalse(result['retryable'])
-        self.assertEqual(result['reason'], 'not_official_lottery')
-        self.assertEqual(browser.execute_async_script.call_count, 1)
+        self.assertTrue(result['retryable'])
+        self.assertIn(result['reason'], ('missing_prize', 'api_code:-9999'))
+        self.assertGreater(browser.execute_async_script.call_count, 1)
+
+    def test_plain_text_giveaway_is_accepted_by_notice_verifier_without_lottery_id(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'data': {'item': {'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，12月5日抽取3位粉丝，每人送出礼包。'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }}}},
+        }
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['source'], 'plain_text')
+        self.assertEqual(result['lottery_rule']['action'], 'forward')
 
     def test_zero_without_lottery_id_is_unknown_not_explicit_non_lottery(self):
         browser = Mock()
@@ -260,6 +323,40 @@ class ShareOneDynamicTests(unittest.TestCase):
         click_share.assert_not_called()
         self.assertEqual(share.share_status, 3)
         self.assertIn('comment editor missing', share.last_error)
+
+    def test_plain_text_lottery_does_not_call_official_notice_before_actions(self):
+        share = DynamicShareBase()
+        share.wait_page_ready = Mock()
+        share.is_expired_dynamic = Mock(return_value=False)
+        share.ensure_publish_cookie = Mock()
+        share.verify_official_lottery = Mock(
+            side_effect=AssertionError('plain text must not call official API')
+        )
+        with patch.object(share, 'click_follow_all'), patch.object(
+            share, 'click_like'
+        ), patch.object(
+            share, 'click_reserve'
+        ), patch.object(
+            share, 'has_current_user_comment', return_value=False
+        ), patch.object(
+            share, 'commit_comment'
+        ), patch.object(
+            share, 'is_already_forwarded', return_value=False
+        ), patch.object(
+            share, 'click_share'
+        ) as click_share, patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            browser = Mock()
+            chains = Mock()
+            share.share_one(
+                browser, chains, 'https://www.bilibili.com/opus/123',
+                'share', 'comment', lottery_kind='plain_text',
+                lottery_end_time='2099-12-31 00:00:00',
+            )
+
+        share.verify_official_lottery.assert_not_called()
+        click_share.assert_called_once_with(browser, chains, 'share')
 
     def test_unconfirmed_lottery_stops_before_any_social_action(self):
         share = DynamicShareBase()

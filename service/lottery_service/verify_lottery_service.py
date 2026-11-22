@@ -106,8 +106,14 @@ class VerifyLotteryService(object):
                         continue
                     self.ready_dao.upsert(
                         url,
-                        result.get('lottery_id'),
+                        result.get('lottery_id') or '',
                         lottery_end_time,
+                        lottery_kind=(
+                            'plain_text'
+                            if result.get('source') == 'plain_text'
+                            else 'official'
+                        ),
+                        lottery_rule=str(result.get('lottery_rule') or ''),
                     )
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     self.scan_cache_dao.save_success('lottery', url, source, note, 1)

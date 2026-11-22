@@ -13,7 +13,9 @@ class LotteryReadyDao(object):
         CREATE TABLE IF NOT EXISTS t_lottery_ready
         (
             dyn_url varchar(255) not null primary key,
-            lottery_id varchar(64) not null,
+            lottery_id varchar(64) null,
+            lottery_kind varchar(32) not null default 'official',
+            lottery_rule text null,
             lottery_end_time datetime null,
             verified_at datetime null,
             update_time datetime null
@@ -27,20 +29,32 @@ class LotteryReadyDao(object):
             return 'NULL'
         return "'" + str(value).replace("'", "''") + "'"
 
-    def upsert(self, dyn_url, lottery_id, lottery_end_time=None):
+    def upsert(
+        self,
+        dyn_url,
+        lottery_id,
+        lottery_end_time=None,
+        lottery_kind='official',
+        lottery_rule=None,
+    ):
         now = datetime.now()
         sql = """
         INSERT INTO t_lottery_ready
-            (dyn_url, lottery_id, lottery_end_time, verified_at, update_time)
-        VALUES (%s, %s, %s, %s, %s)
+            (dyn_url, lottery_id, lottery_kind, lottery_rule,
+             lottery_end_time, verified_at, update_time)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             lottery_id = VALUES(lottery_id),
+            lottery_kind = VALUES(lottery_kind),
+            lottery_rule = VALUES(lottery_rule),
             lottery_end_time = VALUES(lottery_end_time),
             verified_at = VALUES(verified_at),
             update_time = VALUES(update_time)
         """ % (
             self._literal(dyn_url),
             self._literal(lottery_id),
+            self._literal(lottery_kind),
+            self._literal(lottery_rule),
             self._literal(lottery_end_time),
             self._literal(now),
             self._literal(now),
@@ -49,7 +63,7 @@ class LotteryReadyDao(object):
 
     def query_ready(self, limit=10):
         sql = """
-        SELECT d.*, r.lottery_id, r.lottery_end_time, r.verified_at
+        SELECT d.*, r.lottery_id, r.lottery_kind, r.lottery_rule, r.lottery_end_time, r.verified_at
         FROM t_draw_dynamic d
         JOIN t_lottery_ready r ON r.dyn_url = d.dyn_url
         WHERE d.status = '5'

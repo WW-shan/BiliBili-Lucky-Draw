@@ -127,6 +127,16 @@ class ShareOneDynamicTests(unittest.TestCase):
             'business_id=987654321', browser.execute_async_script.call_args_list[-1].args[1]
         )
 
+    def test_verification_does_not_treat_missing_detail_as_non_lottery(self):
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value=None)
+        result = share.fetch_official_lottery_notice(
+            Mock(), 'https://www.bilibili.com/opus/123'
+        )
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['retryable'])
+        self.assertEqual(result['reason'], 'detail_unavailable')
+
     def test_notice_api_timeout_is_retryable(self):
         browser = Mock()
         share = DynamicShareBase()
@@ -171,6 +181,36 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['action'], 'forward')
         self.assertEqual(result['required_actions'], ['follow', 'comment', 'forward'])
+
+    def test_negative_giveaway_examples_are_rejected(self):
+        samples = (
+            '抽奖结果公布，恭喜以下3位中奖粉丝，开奖时间11月20日。',
+            '抽奖合集更新，上期传送门，本期完。',
+            '关注我，优惠券购买链接在商城，限时福利。',
+            '直播间预约，直播中，人看过。',
+        )
+        for text in samples:
+            with self.subTest(text=text):
+                item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': text},
+                ]}}}}
+                result = DynamicShareBase.classify_lottery_item(item)
+                self.assertFalse(result['confirmed'])
+
+    def test_ambiguous_giveaway_examples_are_not_auto_confirmed(self):
+        samples = (
+            '抽奖活动即将开始，敬请期待。',
+            '评论区随机掉落一张鼠标垫。',
+            '抽奖合集链接，详情见专栏。',
+            '关注并转发，奖品稍后公布。',
+        )
+        for text in samples:
+            with self.subTest(text=text):
+                item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': text},
+                ]}}}}
+                result = DynamicShareBase.classify_lottery_item(item)
+                self.assertFalse(result['confirmed'])
 
     def test_compressed_giveaway_actions_are_recognized(self):
         samples = (

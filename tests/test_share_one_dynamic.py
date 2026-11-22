@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 from service.bilibili_errors import BilibiliVerificationRequired
 from service.share_service.share_one_dynamic import DynamicShareBase
@@ -179,6 +179,61 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['lottery_id'], '999')
+
+    def test_share_success_detection_ignores_original_card_failure_words(self):
+        share = DynamicShareBase()
+        browser = Mock()
+        browser.find_elements.return_value = []
+        modal = Mock()
+        modal.get_attribute.return_value = '参与抽奖 操作失败 发布 999'
+        modal.text = ''
+        share.get_visible_elements = Mock(return_value=[modal])
+
+        with patch.object(share, 'get_visible_message_text', return_value=''):
+            with self.assertRaises(TimeoutException):
+                share.wait_share_success(browser, timeout=1)
+
+    def test_comment_editor_timeout_does_not_block_forwarding(self):
+        share = DynamicShareBase()
+        browser = Mock()
+        chains = Mock()
+        share.wait_page_ready = Mock()
+        share.verify_official_lottery = Mock(return_value=(True, ''))
+        share.resolve_lottery_time = Mock()
+        share.is_expired_dynamic = Mock(return_value=False)
+        share.ensure_publish_cookie = Mock()
+        share.get_up_info = Mock()
+        share.get_up_id_from_initial_state = Mock(return_value='123')
+        share.add_up_id = Mock()
+        share.upIds = ['123']
+        share.upUrls = ['https://space.bilibili.com/123']
+        share.get_follow_relation = Mock(return_value={'followed': True})
+        share.wait_clickable_css = Mock(return_value=Mock())
+        share.wait_css = Mock(side_effect=TimeoutException('comment editor missing'))
+        share.click_by_js = Mock()
+        share.wait_follow_relation = Mock(return_value=True)
+        share.is_done_text = Mock(return_value=True)
+
+        with patch.object(share, 'click_follow_all'), patch.object(
+            share, 'click_like'
+        ), patch.object(
+            share, 'click_reserve'
+        ), patch.object(
+            share, 'has_current_user_comment', return_value=False
+        ), patch.object(
+            share, 'is_already_forwarded', return_value=False
+        ), patch.object(
+            share, 'click_share'
+        ) as click_share, patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            share.commit_comment = Mock(side_effect=TimeoutException('comment editor missing'))
+            share.share_one(
+                browser, chains, 'https://www.bilibili.com/opus/123', 'share', 'comment'
+            )
+
+        click_share.assert_called_once_with(browser, chains, 'share')
+        self.assertEqual(share.share_status, 0)
 
     def test_unconfirmed_lottery_stops_before_any_social_action(self):
         share = DynamicShareBase()

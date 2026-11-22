@@ -17,6 +17,7 @@ mylogger = MyLogger('verify_lottery_service.py').getLogger()
 
 class VerifyLotteryService(object):
     RETRY_BACKOFF_MINUTES = 5
+    UNKNOWN_CIRCUIT_BREAKER = 8
 
     @staticmethod
     def _is_expired(lottery_end_time):
@@ -85,6 +86,7 @@ class VerifyLotteryService(object):
             eligible.append(candidate)
             if len(eligible) >= limit:
                 break
+        consecutive_unknown = 0
         try:
             if eligible:
                 self._ensure_browser()
@@ -123,9 +125,16 @@ class VerifyLotteryService(object):
                         url,
                         result.get('reason') or 'unknown',
                     )
-                    # API 连续返回 -9999 时先做短退避，避免把整个批次打满；
-                    # 该条不会进入 24 小时全局冻结。
-                    time.sleep(1.5)
+                    consecutive_unknown += 1
+                    # 抽奖服务连续系统性报错时，本轮继续撞同一服务没有收益。
+                    # 该条不会进入 24 小时全局冻结，下轮轮转继续。
+                    if consecutive_unknown >= self.UNKNOWN_CIRCUIT_BREAKER:
+                        mylogger.warning(
+                            '抽奖接口连续 %s 条无法确认，提前结束本轮验证并保留待重试',
+                            consecutive_unknown,
+                        )
+                        break
+                    time.sleep(0.5)
                 if self.pause_seconds:
                     time.sleep(self.pause_seconds)
         finally:

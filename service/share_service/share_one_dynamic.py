@@ -131,11 +131,16 @@ class DynamicShareBase(object):
             # 预约抽奖
             self.click_reserve(bro, chains)
             random_sleep()
-            # 评论
+            # 评论。评论框偶发未加载不应阻断更关键的转发参与。
             if self.has_current_user_comment(bro):
                 mylogger.info("当前账号已评论，跳过评论")
             else:
-                self.commit_comment(bro, chains, comment_content)
+                try:
+                    self.commit_comment(bro, chains, comment_content)
+                except TimeoutException as exc:
+                    mylogger.warning(
+                        "评论框加载超时，继续执行转发参与：%s", exc
+                    )
             random_sleep()
             # 移动到“分享”按钮, 点击“转发”
             if self.is_already_forwarded(bro):
@@ -1126,11 +1131,16 @@ selection.addRange(range);
                 (element.get_attribute('innerText') or element.text or '').strip()
                 for element in modal
             )
-            fail_words = ["发布失败", "转发失败", "操作失败", "csrf", "验证码", "频繁"]
-            if any(word in modal_text for word in fail_words):
-                raise Exception("转发提交失败，页面提示：" + self.get_page_tip(modal_text))
+            # 转发弹窗会引用原动态正文，正文可能出现“操作失败”等词。
+            # 只把明确的发布结果提示当作失败；同时优先识别成功提示。
+            fail_words = [
+                "发布失败", "转发失败", "提交失败", "csrf",
+                "验证码", "请求过于频繁", "系统繁忙",
+            ]
             if "发布成功" in modal_text or "转发成功" in modal_text:
                 return True
+            if any(word in modal_text for word in fail_words):
+                raise Exception("转发提交失败，页面提示：" + self.get_page_tip(modal_text))
             if len(modal) == 0:
                 message_text = self.get_visible_message_text(driver)
                 if any(word in message_text for word in fail_words):

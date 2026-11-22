@@ -217,6 +217,23 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.draw_dao.update_sharedUrl.assert_not_called()
         service.ready_dao.upsert.assert_not_called()
 
+    def test_consecutive_unknown_responses_stop_the_batch_early(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/%s' % index, 'status': '0'}
+            for index in range(30)
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False,
+            'retryable': True,
+            'reason': 'api_code:-9999',
+        }
+
+        stats = service.verify_pending(limit=30)
+
+        self.assertLess(stats['checked'], 30)
+        self.assertEqual(stats['deferred'], stats['checked'])
+
     def test_recent_verification_failure_is_skipped(self):
         service = self.build_service()
         service.scan_cache_dao.has_recent_failure.side_effect = [True, False, False, True, False, False]

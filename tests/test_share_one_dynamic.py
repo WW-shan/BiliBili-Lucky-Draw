@@ -153,6 +153,29 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIn('8000', browser.execute_async_script.call_args.args[0])
         self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
 
+    def test_relative_weekday_giveaway_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '转赞评本条动态，下周五抽取2位，送出周边礼包。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['kind'], 'plain_text_lottery')
+
+    def test_compressed_giveaway_actions_are_recognized(self):
+        samples = (
+            ('转赞评本条动态，11月27日抽取2位，送出周边礼包。', 'forward'),
+            ('评论区抽1人，11月27日送出机械臂。', 'comment'),
+            ('关&转&赞&评本动态，11月27日抽5位送出轴体。', 'forward'),
+        )
+        for text, action in samples:
+            with self.subTest(text=text):
+                item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': text},
+                ]}}}}
+                result = DynamicShareBase.classify_lottery_item(item)
+                self.assertTrue(result['confirmed'])
+                self.assertEqual(result['action'], action)
+
     def test_plain_text_giveaway_with_rules_is_confirmed_without_official_component(self):
         item = {
             'modules': {'module_dynamic': {
@@ -167,6 +190,22 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertEqual(result['kind'], 'plain_text_lottery')
         self.assertTrue(result['confirmed'])
 
+    def test_plain_follow_only_giveaway_is_confirmed_as_follow_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注UP主，12月1日抽3人送出周边礼包。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['action'], 'follow')
+
+    def test_plain_comment_only_giveaway_is_confirmed_as_comment_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '在评论区留言，12月1日抽3人送出周边礼包。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['action'], 'comment')
+
     def test_plain_text_giveaway_without_a_concrete_date_is_not_confirmed(self):
         item = {
             'modules': {'module_dynamic': {
@@ -179,6 +218,14 @@ class ShareOneDynamicTests(unittest.TestCase):
         result = DynamicShareBase.classify_lottery_item(item)
         self.assertFalse(result['confirmed'])
         self.assertEqual(result['reason'], 'missing_concrete_time')
+
+    def test_giveaway_need_with_repost_and_prize_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '转发这条动态，并关注UP主，12月1日抽3人送出周边。'},
+        ]}, 'major': {'type': 'MAJOR_TYPE_OPUS'}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['action'], 'forward')
 
     def test_giveaway_result_announcement_is_not_participable(self):
         item = {

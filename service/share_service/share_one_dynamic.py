@@ -290,27 +290,52 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
 
         giveaway_words = ('抽', '揪', '送', '赠', '福利', '奖品', '有奖')
         prize_words = ('元', '礼包', '奖品', '名额', '红包', '礼物', '门票', '周边', '卡', '券', '位')
+        action_text = normalized.replace('&', '').replace('＋', '').replace('+', '')
         action_words = ('关注', '转发', '评论', '点赞', '预约', '参与', '@')
-        date_words = ('开奖', '截止', '日期', '月', '日', '时间')
+        action_aliases = ('转赞评', '关转赞评', '关转评', '转评', '评论抽', '评论区抽', '关注转发评论')
+        # “送出机械臂”这类奖品词可能本身不含“礼包/元/卡”等常见词，抽奖语义已足够。
+        date_words = (
+            '开奖', '截止', '日期', '月', '日', '时间',
+            '下周五', '本周五', '周五', '下周一', '本周一',
+        )
         if not any(word in normalized for word in giveaway_words):
             return result
         if not any(word in normalized for word in prize_words):
-            result.update(kind='suspected_giveaway', reason='missing_prize')
-            return result
-        if not any(word in normalized for word in action_words):
+            # 真实案例常见“送出机械臂/同款产品”等具体物品名；
+            # 有明确抽奖动作和时间时，不因奖品词表缺失就丢弃。
+            if not (
+                any(alias in action_text for alias in action_aliases)
+                and any(word in normalized for word in date_words)
+            ):
+                result.update(kind='suspected_giveaway', reason='missing_prize')
+                return result
+        if (
+            not any(word in action_text for word in action_words)
+            and not any(alias in action_text for alias in action_aliases)
+        ):
             result.update(kind='suspected_giveaway', reason='missing_action')
             return result
         if not any(word in normalized for word in date_words):
             result.update(kind='suspected_giveaway', reason='missing_concrete_time')
             return result
 
+        has_forward = (
+            '转发' in normalized
+            or '转赞评' in action_text
+            or '转评' in action_text
+            or '关&转' in normalized
+        )
+        has_comment = '评论' in normalized or '留言' in normalized
+        has_follow = '关注' in normalized
         if '预约' in normalized:
             action = 'reserve'
-        elif '评论' in normalized and '转发' in normalized:
+        elif has_forward and has_comment and has_follow:
             action = 'forward'
-        elif '转发' in normalized:
+        elif has_forward:
             action = 'forward'
-        elif '关注' in normalized:
+        elif has_comment:
+            action = 'comment'
+        elif has_follow:
             action = 'follow'
         else:
             action = 'forward'

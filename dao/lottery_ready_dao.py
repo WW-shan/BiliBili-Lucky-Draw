@@ -22,6 +22,19 @@ class LotteryReadyDao(object):
         ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
         """
         self.db.executeCommit(sql)
+        # MySQL 的 CREATE TABLE IF NOT EXISTS 不会给旧表补列。
+        # 用可重复执行的 ALTER 保证已有数据库也能支持普通抽奖。
+        migrations = (
+            "ALTER TABLE t_lottery_ready MODIFY lottery_id varchar(64) NULL",
+            "ALTER TABLE t_lottery_ready ADD COLUMN lottery_kind varchar(32) NOT NULL DEFAULT 'official'",
+            "ALTER TABLE t_lottery_ready ADD COLUMN lottery_rule text NULL",
+        )
+        for statement in migrations:
+            try:
+                self.db.executeCommit(statement)
+            except Exception:
+                # ADD COLUMN 在已迁移数据库上会报重复列；不阻断启动。
+                pass
 
     @staticmethod
     def _literal(value):

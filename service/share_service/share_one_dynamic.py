@@ -226,6 +226,26 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
             return None
         return ((result.get('data') or {}).get('item') or None)
 
+    @staticmethod
+    def _has_official_lottery_component(item):
+        if not isinstance(item, dict):
+            return False
+        serialized = str(item).lower()
+        if 'rich_text_node_type_lottery' in serialized:
+            return True
+        if 'additional_type_lottery' in serialized:
+            return True
+        if 'additional_type_reserve' in serialized:
+            return True
+        if 'lottery/result?' in serialized:
+            return True
+        try:
+            if DynamicShareBase._extract_reserve_rid(item):
+                return True
+        except Exception:
+            pass
+        return False
+
     @classmethod
     def _extract_reserve_rid(cls, item):
         if not isinstance(item, dict):
@@ -272,6 +292,12 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         # 互动抽奖固定 business_type=1；预约抽奖需要先解析 reserve.rid，
         # 再用 business_type=10 查询。不能把这两种查询混成一个参数。
         item = self._fetch_dynamic_detail_item(bro, lucky_dynamic_url)
+        if isinstance(item, dict) and not self._has_official_lottery_component(item):
+            return {
+                'confirmed': False,
+                'retryable': False,
+                'reason': 'not_official_lottery',
+            }
         reserve_rid = self._extract_reserve_rid(item)
         # 互动抽奖先查 business_type=1；预约抽奖必须使用 reserve.rid。
         # 不应在详情接口失败时用动态 ID 冒充预约业务 ID 重复查询。

@@ -100,7 +100,10 @@ class ShareOneDynamicTests(unittest.TestCase):
         ]
         browser.execute_async_script.side_effect = [
             {'code': 0, 'data': {'item': {'modules': {'module_dynamic': {
-                'additional': {'reserve': {'rid': '987654321'}},
+                'additional': {
+                    'reserve': {'rid': '987654321'},
+                    'type': 'ADDITIONAL_TYPE_RESERVE',
+                },
             }}}}},
             {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
             {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
@@ -149,6 +152,27 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['retryable'])
         self.assertIn('8000', browser.execute_async_script.call_args.args[0])
         self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
+
+    def test_non_official_text_giveaway_is_excluded_before_notice_retries(self):
+        browser = Mock()
+        browser.execute_async_script.side_effect = [
+            {'code': 0, 'data': {'item': {'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注转发评论参与抽奖'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }}}}},
+        ]
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['reason'], 'not_official_lottery')
+        self.assertEqual(browser.execute_async_script.call_count, 1)
 
     def test_zero_without_lottery_id_is_unknown_not_explicit_non_lottery(self):
         browser = Mock()

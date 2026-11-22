@@ -234,6 +234,23 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         self.assertLess(stats['checked'], 30)
         self.assertEqual(stats['deferred'], stats['checked'])
 
+    def test_verification_batch_rotates_with_small_limit(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/%s' % index, 'status': '0'}
+            for index in range(10)
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False,
+            'retryable': False,
+            'reason': 'not_lottery',
+        }
+
+        stats = service.verify_pending(limit=5)
+
+        self.assertEqual(stats['checked'], 5)
+        service.draw_dao.query_by_verification_priority.assert_called_with(limit=20)
+
     def test_recent_verification_failure_is_skipped(self):
         service = self.build_service()
         service.scan_cache_dao.has_recent_failure.side_effect = [True, False, False, True, False, False]

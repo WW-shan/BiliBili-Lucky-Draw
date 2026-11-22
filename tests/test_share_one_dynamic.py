@@ -51,6 +51,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         commit_comment.assert_called_once_with(browser, chains, 'comment')
         click_share.assert_called_once_with(browser, chains, 'share')
         self.assertEqual(share.share_status, 0)
+        self.assertIsNone(share.last_error)
         self.assertEqual(share.share_url, 'https://www.bilibili.com/opus/123')
 
     def test_detail_fetch_has_hard_timeout(self):
@@ -193,7 +194,7 @@ class ShareOneDynamicTests(unittest.TestCase):
             with self.assertRaises(TimeoutException):
                 share.wait_share_success(browser, timeout=1)
 
-    def test_comment_editor_timeout_does_not_block_forwarding(self):
+    def test_comment_editor_timeout_marks_participation_incomplete(self):
         share = DynamicShareBase()
         browser = Mock()
         chains = Mock()
@@ -232,8 +233,9 @@ class ShareOneDynamicTests(unittest.TestCase):
                 browser, chains, 'https://www.bilibili.com/opus/123', 'share', 'comment'
             )
 
-        click_share.assert_called_once_with(browser, chains, 'share')
-        self.assertEqual(share.share_status, 0)
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 3)
+        self.assertIn('comment editor missing', share.last_error)
 
     def test_unconfirmed_lottery_stops_before_any_social_action(self):
         share = DynamicShareBase()
@@ -271,7 +273,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         click_follow.assert_not_called()
         click_like.assert_not_called()
         click_share.assert_not_called()
-        self.assertEqual(share.share_status, 1)
+        self.assertEqual(share.share_status, 3)
         self.assertIn('manual verification', share.last_error)
 
     def test_publish_success_survives_stale_modal_during_confirmation(self):

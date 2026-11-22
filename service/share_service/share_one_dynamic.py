@@ -131,16 +131,11 @@ class DynamicShareBase(object):
             # 预约抽奖
             self.click_reserve(bro, chains)
             random_sleep()
-            # 评论。评论框偶发未加载不应阻断更关键的转发参与。
+            # 三个必需动作必须全部完成，任何一个失败都不能记为成功。
             if self.has_current_user_comment(bro):
                 mylogger.info("当前账号已评论，跳过评论")
             else:
-                try:
-                    self.commit_comment(bro, chains, comment_content)
-                except TimeoutException as exc:
-                    mylogger.warning(
-                        "评论框加载超时，继续执行转发参与：%s", exc
-                    )
+                self.commit_comment(bro, chains, comment_content)
             random_sleep()
             # 移动到“分享”按钮, 点击“转发”
             if self.is_already_forwarded(bro):
@@ -153,6 +148,8 @@ class DynamicShareBase(object):
             self.status = 0
         except Exception as e:
             self.last_error = str(e)
+            self.share_status = 3
+            self.status = 3
             try:
                 body_text = bro.find_element(By.TAG_NAME, "body").text or ""
                 title = bro.title or ""

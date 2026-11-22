@@ -31,13 +31,13 @@ class MainWorkflowTests(unittest.TestCase):
         scheduler.every.side_effect = [discovery_job, action_job]
 
         with patch.object(globals, 'discovery_interval_hours', 4), patch.object(
-            globals, 'action_interval_minutes', 15
+            globals, 'action_interval_minutes', 5
         ):
             main.register_jobs(scheduler)
 
         self.assertEqual(
             scheduler.every.call_args_list,
-            [unittest.mock.call(4), unittest.mock.call(15)],
+            [unittest.mock.call(4), unittest.mock.call(5)],
         )
         discovery_job.hours.do.assert_called_once_with(main.run_discovery_safely)
         action_job.minutes.do.assert_called_once_with(main.run_actions_safely)

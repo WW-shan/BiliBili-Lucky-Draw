@@ -114,6 +114,9 @@ class VerifyLotteryService(object):
                             else 'official'
                         ),
                         lottery_rule=str(result.get('lottery_rule') or ''),
+                        required_actions=str(
+                            (result.get('lottery_rule') or {}).get('required_actions') or ''
+                        ),
                     )
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     self.scan_cache_dao.save_success('lottery', url, source, note, 1)

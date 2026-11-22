@@ -87,6 +87,7 @@ class BiliLinkShare(object):
                     lottery_end_time=data.get('lottery_end_time'),
                     lottery_kind=data.get('lottery_kind') or 'official',
                     lottery_rule=data.get('lottery_rule'),
+                    required_actions=data.get('required_actions'),
                 )
                 if dyn.last_error:
                     evidence = dyn.get_risk_control_evidence(dyn.last_error)

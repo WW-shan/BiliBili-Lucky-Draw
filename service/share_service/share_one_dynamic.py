@@ -1,3 +1,4 @@
+import json
 import re
 import time
 from datetime import date
@@ -89,6 +90,7 @@ class DynamicShareBase(object):
         lottery_end_time=None,
         lottery_kind='official',
         lottery_rule=None,
+        required_actions=None,
     ):
         """
         提供需要转发的抽奖动态URL，然后“执行状态、up主的ID、up主的主页URL”等信息
@@ -99,6 +101,14 @@ class DynamicShareBase(object):
         """
         self.notice_lottery_time = None
         self.lottery_time = self._coerce_datetime(lottery_end_time)
+        if required_actions is None:
+            required_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
+        elif isinstance(required_actions, str):
+            try:
+                required_actions = json.loads(required_actions)
+            except Exception:
+                required_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
+        self.required_actions = list(required_actions or [])
         try:
             bro.get(lucky_dynamic_url)
             self.wait_page_ready(bro)
@@ -129,27 +139,27 @@ class DynamicShareBase(object):
                 mylogger.info("动态已过期，跳过转发url : " + lucky_dynamic_url)
                 return
             self.ensure_publish_cookie(bro)
-            # 点击关注
-            self.click_follow_all(bro, chains)
-            random_sleep()
-            # 点赞
-            self.click_like(bro, chains)
-            random_sleep()
-            # 预约抽奖
-            self.click_reserve(bro, chains)
-            random_sleep()
-            # 三个必需动作必须全部完成，任何一个失败都不能记为成功。
-            if self.has_current_user_comment(bro):
-                mylogger.info("当前账号已评论，跳过评论")
-            else:
-                self.commit_comment(bro, chains, comment_content)
-            random_sleep()
-            # 移动到“分享”按钮, 点击“转发”
-            if self.is_already_forwarded(bro):
-                mylogger.info("当前账号已转发，跳过转发")
-            else:
-                self.click_share(bro, chains, share_content)
-            random_sleep()
+            if 'follow' in self.required_actions:
+                self.click_follow_all(bro, chains)
+                random_sleep()
+            if 'like' in self.required_actions:
+                self.click_like(bro, chains)
+                random_sleep()
+            if 'reserve' in self.required_actions:
+                self.click_reserve(bro, chains)
+                random_sleep()
+            if 'comment' in self.required_actions:
+                if self.has_current_user_comment(bro):
+                    mylogger.info("当前账号已评论，跳过评论")
+                else:
+                    self.commit_comment(bro, chains, comment_content)
+                random_sleep()
+            if 'forward' in self.required_actions:
+                if self.is_already_forwarded(bro):
+                    mylogger.info("当前账号已转发，跳过转发")
+                else:
+                    self.click_share(bro, chains, share_content)
+                random_sleep()
             # 回填状态
             self.share_status = 0
             self.status = 0
@@ -327,10 +337,10 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         )
         has_comment = '评论' in normalized or '留言' in normalized
         has_follow = '关注' in normalized
-        if '预约' in normalized:
+        has_like = '点赞' in normalized or '赞' in action_text
+        has_reserve = '预约' in normalized
+        if has_reserve:
             action = 'reserve'
-        elif has_forward and has_comment and has_follow:
-            action = 'forward'
         elif has_forward:
             action = 'forward'
         elif has_comment:
@@ -339,7 +349,24 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
             action = 'follow'
         else:
             action = 'forward'
-        result.update(confirmed=True, kind='plain_text_lottery', action=action, reason='verified_text_rules')
+        required_actions = []
+        if has_follow:
+            required_actions.append('follow')
+        if has_comment:
+            required_actions.append('comment')
+        if has_like:
+            required_actions.append('like')
+        if has_forward:
+            required_actions.append('forward')
+        if has_reserve:
+            required_actions.append('reserve')
+        result.update(
+            confirmed=True,
+            kind='plain_text_lottery',
+            action=action,
+            required_actions=required_actions,
+            reason='verified_text_rules',
+        )
         return result
 
     @staticmethod
@@ -408,6 +435,12 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         # 互动抽奖固定 business_type=1；预约抽奖需要先解析 reserve.rid，
         # 再用 business_type=10 查询。不能把这两种查询混成一个参数。
         item = self._fetch_dynamic_detail_item(bro, lucky_dynamic_url)
+        if item is None:
+            return {
+                'confirmed': False,
+                'retryable': True,
+                'reason': 'detail_unavailable',
+            }
         classification = self.classify_lottery_item(item)
         has_official_component = self._has_official_lottery_component(item)
         if isinstance(item, dict) and not has_official_component:

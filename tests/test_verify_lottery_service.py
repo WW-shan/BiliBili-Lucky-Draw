@@ -145,6 +145,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
             '2026-11-25 20:00:00',
             lottery_kind='official',
             lottery_rule='',
+            required_actions='',
         )
         self.assertEqual(
             service.draw_dao.update_sharedUrl.call_args_list,
@@ -196,7 +197,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         )
         service.ready_dao.upsert.assert_called_once_with(
             'https://www.bilibili.com/opus/9', '999', '2099-01-01 00:00:00',
-            lottery_kind='official', lottery_rule=''
+            lottery_kind='official', lottery_rule='', required_actions=''
         )
         service.draw_dao.update_sharedUrl.assert_called_with(
             url='https://www.bilibili.com/opus/9', status='5'

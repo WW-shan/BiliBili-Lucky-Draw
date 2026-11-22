@@ -129,8 +129,9 @@ class ShareOneDynamicTests(unittest.TestCase):
 
     def test_notice_api_timeout_is_retryable(self):
         browser = Mock()
-        browser.execute_async_script.return_value = {'timeout': True}
         share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}})
+        browser.execute_async_script.return_value = {'timeout': True}
 
         result = share.fetch_official_lottery_notice(
             browser, 'https://www.bilibili.com/opus/123', retries=1
@@ -142,8 +143,9 @@ class ShareOneDynamicTests(unittest.TestCase):
 
     def test_notice_api_has_short_fetch_timeout(self):
         browser = Mock()
-        browser.execute_async_script.return_value = {'timeout': True}
         share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}})
+        browser.execute_async_script.return_value = {'timeout': True}
 
         result = share.fetch_official_lottery_notice(
             browser, 'https://www.bilibili.com/opus/123', retries=1
@@ -160,6 +162,15 @@ class ShareOneDynamicTests(unittest.TestCase):
         result = DynamicShareBase.classify_lottery_item(item)
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['kind'], 'plain_text_lottery')
+
+    def test_required_actions_are_recorded_from_the_rule_text(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，评论区留言，11月27日抽3人送出礼包。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['action'], 'forward')
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'forward'])
 
     def test_compressed_giveaway_actions_are_recognized(self):
         samples = (
@@ -226,6 +237,21 @@ class ShareOneDynamicTests(unittest.TestCase):
         result = DynamicShareBase.classify_lottery_item(item)
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['action'], 'forward')
+
+    def test_detail_html_response_is_unknown_not_non_lottery(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'error': 'SyntaxError: Unexpected token <'
+        }
+        share = DynamicShareBase()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['retryable'])
+        self.assertIn('detail', result['reason'])
 
     def test_giveaway_result_announcement_is_not_participable(self):
         item = {
@@ -302,11 +328,12 @@ class ShareOneDynamicTests(unittest.TestCase):
 
     def test_confirmed_activity_notice_is_not_treated_as_not_lottery(self):
         browser = Mock()
-        browser.execute_async_script.side_effect = [
-            {'code': 0, 'data': {'item': {}}},
-            {'code': 0, 'message': '', 'lottery_id': '999', 'lottery_time': 2099999999, 'status': 0},
-        ]
         share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}})
+        browser.execute_async_script.return_value = {
+            'code': 0, 'message': '', 'lottery_id': '999',
+            'lottery_time': 2099999999, 'status': 0,
+        }
 
         result = share.fetch_official_lottery_notice(
             browser, 'https://www.bilibili.com/opus/123'

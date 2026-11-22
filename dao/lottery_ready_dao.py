@@ -16,6 +16,7 @@ class LotteryReadyDao(object):
             lottery_id varchar(64) null,
             lottery_kind varchar(32) not null default 'official',
             lottery_rule text null,
+            required_actions text null,
             lottery_end_time datetime null,
             verified_at datetime null,
             update_time datetime null
@@ -28,6 +29,7 @@ class LotteryReadyDao(object):
             "ALTER TABLE t_lottery_ready MODIFY lottery_id varchar(64) NULL",
             "ALTER TABLE t_lottery_ready ADD COLUMN lottery_kind varchar(32) NOT NULL DEFAULT 'official'",
             "ALTER TABLE t_lottery_ready ADD COLUMN lottery_rule text NULL",
+            "ALTER TABLE t_lottery_ready ADD COLUMN required_actions text NULL",
         )
         for statement in migrations:
             try:
@@ -49,17 +51,19 @@ class LotteryReadyDao(object):
         lottery_end_time=None,
         lottery_kind='official',
         lottery_rule=None,
+        required_actions=None,
     ):
         now = datetime.now()
         sql = """
         INSERT INTO t_lottery_ready
-            (dyn_url, lottery_id, lottery_kind, lottery_rule,
+            (dyn_url, lottery_id, lottery_kind, lottery_rule, required_actions,
              lottery_end_time, verified_at, update_time)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             lottery_id = VALUES(lottery_id),
             lottery_kind = VALUES(lottery_kind),
             lottery_rule = VALUES(lottery_rule),
+            required_actions = VALUES(required_actions),
             lottery_end_time = VALUES(lottery_end_time),
             verified_at = VALUES(verified_at),
             update_time = VALUES(update_time)
@@ -68,6 +72,7 @@ class LotteryReadyDao(object):
             self._literal(lottery_id),
             self._literal(lottery_kind),
             self._literal(lottery_rule),
+            self._literal(required_actions),
             self._literal(lottery_end_time),
             self._literal(now),
             self._literal(now),
@@ -76,7 +81,7 @@ class LotteryReadyDao(object):
 
     def query_ready(self, limit=10):
         sql = """
-        SELECT d.*, r.lottery_id, r.lottery_kind, r.lottery_rule, r.lottery_end_time, r.verified_at
+        SELECT d.*, r.lottery_id, r.lottery_kind, r.lottery_rule, r.required_actions, r.lottery_end_time, r.verified_at
         FROM t_draw_dynamic d
         JOIN t_lottery_ready r ON r.dyn_url = d.dyn_url
         WHERE d.status = '5'

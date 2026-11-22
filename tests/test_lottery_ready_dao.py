@@ -37,6 +37,7 @@ class LotteryReadyDaoTests(unittest.TestCase):
         self.assertTrue(any('alter table' in sql.lower() for sql in statements))
         self.assertTrue(any('lottery_kind' in sql.lower() for sql in statements))
         self.assertTrue(any('lottery_rule' in sql.lower() for sql in statements))
+        self.assertTrue(any('required_actions' in sql.lower() for sql in statements))
 
     def test_upsert_accepts_plain_text_lottery_without_lottery_id(self):
         db = Mock()

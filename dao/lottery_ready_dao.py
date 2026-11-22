@@ -30,6 +30,7 @@ class LotteryReadyDao(object):
             "ALTER TABLE t_lottery_ready ADD COLUMN lottery_kind varchar(32) NOT NULL DEFAULT 'official'",
             "ALTER TABLE t_lottery_ready ADD COLUMN lottery_rule text NULL",
             "ALTER TABLE t_lottery_ready ADD COLUMN required_actions text NULL",
+            "ALTER TABLE t_lottery_ready CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
         )
         for statement in migrations:
             try:
@@ -85,6 +86,7 @@ class LotteryReadyDao(object):
         FROM t_draw_dynamic d
         JOIN t_lottery_ready r ON r.dyn_url = d.dyn_url
         WHERE d.status = '5'
+          AND (r.lottery_end_time IS NULL OR r.lottery_end_time > NOW())
         ORDER BY
             CASE WHEN r.lottery_end_time IS NULL THEN 1 ELSE 0 END,
             r.lottery_end_time ASC,

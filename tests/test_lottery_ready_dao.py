@@ -55,6 +55,20 @@ class LotteryReadyDaoTests(unittest.TestCase):
         self.assertIn('plain_text', sql)
         self.assertIn('{"action": "forward"}', sql)
 
+    def test_ready_table_is_migrated_to_utf8mb4_for_emoji_rules(self):
+        db = Mock()
+        db.executeCommit.side_effect = [
+            None,
+            Exception('duplicate'),
+            Exception('duplicate'),
+            Exception('duplicate'),
+            None,
+        ]
+        LotteryReadyDao(db)
+
+        statements = [call.args[0] for call in db.executeCommit.call_args_list]
+        self.assertTrue(any('CONVERT TO CHARACTER SET utf8mb4' in s for s in statements))
+
     def test_query_ready_uses_verified_status_and_expiry_order(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]
@@ -68,6 +82,7 @@ class LotteryReadyDaoTests(unittest.TestCase):
         self.assertIn('join t_lottery_ready', sql)
         self.assertIn("d.status = '5'", sql)
         self.assertIn('r.lottery_end_time', sql)
+        self.assertIn('now()', sql)
         self.assertIn('limit 10', sql)
 
 

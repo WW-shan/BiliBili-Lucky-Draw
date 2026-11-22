@@ -1,10 +1,12 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 from service.bilibili_errors import BilibiliVerificationRequired
 from service.share_service.share_one_dynamic import DynamicShareBase
+from service.share_service.share_one_dynamic import SHANGHAI_TZ
 
 
 class ShareOneDynamicTests(unittest.TestCase):
@@ -54,6 +56,125 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIsNone(share.last_error)
         self.assertEqual(share.share_url, 'https://www.bilibili.com/opus/123')
 
+    def test_detail_fetch_runs_from_www_origin(self):
+        browser = Mock()
+        browser.current_url = 'https://api.bilibili.com/x/web-interface/nav'
+        browser.execute_async_script.return_value = {
+            'data': {'item': {'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}}}
+        }
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+
+        share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        browser.get.assert_called_once_with('https://www.bilibili.com/')
+
+    def test_detail_fetch_wait_is_configurable_and_paced(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'data': {'item': {'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}}}
+        }
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 8
+        share.detail_request_max_seconds = 15
+
+        with patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ) as sleep:
+            share._fetch_dynamic_detail_item(
+                browser, 'https://www.bilibili.com/opus/123'
+            )
+
+        sleep.assert_called_once_with(start=8, end=15)
+
+    def test_detail_fetch_reports_retryable_api_error(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': -9999,
+            'message': '服务系统错误',
+        }
+        share = DynamicShareBase()
+
+        result = share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/123'
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(share.last_api_reason, 'api_code:-9999')
+
+    def test_opus_detail_modules_list_is_normalized_with_text(self):
+        item = {
+            'modules': [
+                {'module_type': 'MODULE_TYPE_TITLE', 'module_title': {
+                    'text': '转发抽奖：好龙谷 1/35 古生物 恐象'
+                }},
+                {'module_type': 'MODULE_TYPE_AUTHOR', 'module_author': {
+                    'mid': '386837540',
+                    'name': '萌猴爱模玩',
+                }},
+                {'module_type': 'MODULE_TYPE_CONTENT', 'module_content': {
+                    'paragraphs': [
+                        {'text': {'nodes': [
+                            {'type': 'TEXT_NODE_TYPE_WORD', 'word': {
+                                'words': '福利抽奖：好龙谷 1/35 古生物 恐象\n抽奖规则：关注+评论+点赞+转发参与，12月5号开奖。',
+                            }},
+                        ]}},
+                    ],
+                }},
+            ],
+        }
+
+        normalized = DynamicShareBase._normalize_dynamic_item(item)
+
+        self.assertIn('module_dynamic', normalized['modules'])
+        self.assertIn('12月5号开奖', DynamicShareBase._dynamic_item_text(normalized))
+
+    def test_detail_api_falls_back_to_opus_detail_before_giving_up(self):
+        browser = Mock()
+        browser.execute_async_script.side_effect = [
+            {'code': -9999, 'message': '服务系统错误'},
+            {'code': 0, 'data': {'item': {
+                'id_str': '1271215276335038485',
+                'modules': {'module_dynamic': {'desc': {'text': '12月5日抽奖'}}},
+            }}},
+        ]
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+
+        result = share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/1271215276335038485'
+        )
+
+        self.assertIsInstance(result, dict)
+        self.assertIn('opus/detail', browser.execute_async_script.call_args_list[-1].args[1])
+        self.assertEqual(browser.execute_async_script.call_count, 2)
+
+    def test_notice_retries_stop_after_first_system_error(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': -9999,
+            'message': '服务系统错误',
+            'lottery_id': '',
+            'status': None,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}
+        })
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=3
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['retryable'])
+        self.assertEqual(result['reason'], 'api_code:-9999')
+        self.assertEqual(browser.execute_async_script.call_count, 1)
+
     def test_detail_fetch_has_hard_timeout(self):
         browser = Mock()
         browser.set_script_timeout.side_effect = Exception('must not change global timeout')
@@ -66,6 +187,15 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
+
+    def test_preverified_deadline_uses_bilibili_timezone(self):
+        deadline = datetime.now(SHANGHAI_TZ) + timedelta(hours=1)
+        self.assertFalse(DynamicShareBase._is_expired_deadline(deadline))
+
+    def test_naive_db_deadline_is_interpreted_as_shanghai_time(self):
+        deadline = datetime(2026, 11, 23, 10, 0)
+        now = datetime(2026, 11, 22, 16, 45, tzinfo=timezone.utc)
+        self.assertFalse(DynamicShareBase._is_expired_deadline(deadline, now=now))
 
     def test_preverified_expired_lottery_stops_before_page_time_parsing_or_actions(self):
         share = DynamicShareBase()
@@ -106,10 +236,6 @@ class ShareOneDynamicTests(unittest.TestCase):
                 },
             }}}}},
             {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
-            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
-            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
-            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
-            {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None},
             {'code': 0, 'message': '', 'lottery_id': '777', 'lottery_time': 2099999999, 'status': 0},
         ]
         share = DynamicShareBase()
@@ -120,6 +246,10 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['lottery_id'], '777')
+        self.assertIn(
+            'web-dynamic/v1/detail',
+            browser.execute_async_script.call_args_list[0].args[1],
+        )
         self.assertIn(
             'business_type=10', browser.execute_async_script.call_args_list[-1].args[1]
         )
@@ -136,6 +266,24 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertFalse(result['confirmed'])
         self.assertTrue(result['retryable'])
         self.assertEqual(result['reason'], 'detail_unavailable')
+
+    def test_notice_api_risk_control_code_stops_without_retry(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': -352, 'message': '-352', 'lottery_id': '', 'status': None,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}
+        })
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=3
+        )
+
+        self.assertTrue(result['retryable'])
+        self.assertEqual(result['reason'], 'api_code:-352')
+        self.assertEqual(browser.execute_async_script.call_count, 1)
 
     def test_notice_api_timeout_is_retryable(self):
         browser = Mock()
@@ -162,7 +310,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         )
 
         self.assertTrue(result['retryable'])
-        self.assertIn('8000', browser.execute_async_script.call_args.args[0])
+        self.assertIn('10000', browser.execute_async_script.call_args.args[0])
         self.assertIn('setTimeout', browser.execute_async_script.call_args.args[0])
 
     def test_relative_weekday_giveaway_is_recognized(self):
@@ -211,6 +359,20 @@ class ShareOneDynamicTests(unittest.TestCase):
                 ]}}}}
                 result = DynamicShareBase.classify_lottery_item(item)
                 self.assertFalse(result['confirmed'])
+
+    def test_short_compressed_giveaway_records_follow_comment_forward(self):
+        item = {
+            'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关转评，猜猜价格，11.27 抽一位送外设盲盒。'},
+            ]}}},
+        }
+
+        result = DynamicShareBase.classify_lottery_item(item)
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(
+            result['required_actions'], ['follow', 'comment', 'forward']
+        )
 
     def test_compressed_giveaway_actions_are_recognized(self):
         samples = (
@@ -328,6 +490,40 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['retryable'])
         self.assertIn(result['reason'], ('missing_prize', 'api_code:-9999'))
         self.assertGreater(browser.execute_async_script.call_count, 1)
+
+    def test_deadline_is_parsed_from_numbered_chinese_giveaway_time(self):
+        self.assertEqual(
+            DynamicShareBase._parse_plain_text_deadline(
+                '小金将在11月27日抽5个小可爱送出京东卡'
+            ),
+            '2026-11-27 23:59:00',
+        )
+
+    def test_plain_text_giveaway_returns_parsed_deadline(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'data': {'item': {'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，11月30日20:00抽取1位粉丝送出礼包。'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }}}},
+        }
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+
+        with patch.object(
+            share, '_parse_plain_text_deadline', return_value='2026-11-30 20:00:00'
+        ) as parser:
+            result = share.fetch_official_lottery_notice(
+                browser, 'https://www.bilibili.com/opus/123', retries=1
+            )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['lottery_end_time'], '2026-11-30 20:00:00')
+        parser.assert_called_once()
 
     def test_plain_text_giveaway_is_accepted_by_notice_verifier_without_lottery_id(self):
         browser = Mock()

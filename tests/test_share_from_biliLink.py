@@ -88,9 +88,17 @@ class BiliLinkShareTests(unittest.TestCase):
         webdriver.assert_called_once_with()
         login_service.assert_called_once_with(browser, chains, '35549700')
 
+    def test_ready_queue_is_read_twice_before_skipping_action_cycle(self):
+        service = self.build_service()
+        service.get_today_dynamic_links = Mock(side_effect=[[], []])
+
+        service.do_share_by_links()
+
+        self.assertEqual(service.get_today_dynamic_links.call_count, 2)
+
     def test_empty_ready_queue_does_not_start_a_browser_login(self):
         service = self.build_service()
-        service.get_today_dynamic_links = Mock(return_value=[])
+        service.get_today_dynamic_links = Mock(side_effect=[[], []])
 
         with patch(
             'service.share_service.share_from_biliLink.LoginService'

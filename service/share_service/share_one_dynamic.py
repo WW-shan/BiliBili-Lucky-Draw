@@ -3,9 +3,11 @@ import re
 import time
 from datetime import date
 from datetime import datetime
+from datetime import timezone
 from datetime import timedelta
 from datetime import time as datetime_time
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
@@ -13,10 +15,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from service.log_service.log_printer_service import MyLogger
+from utils import globals
 from utils.ip_util import get_host_ip
 from utils.time_util import random_sleep
 
 mylogger = MyLogger('share_one_dynamic.py').getLogger()
+SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
+# Bilibili timestamps are Unix timestamps. Normalize them to naive
+# Asia/Shanghai wall time at the boundary so DB rows and comparisons are
+# consistent regardless of the container's system timezone.
+UTC_TZ = timezone.utc
 
 
 class DynamicShareBase(object):
@@ -40,13 +48,19 @@ class DynamicShareBase(object):
     LOTTERY_NOTICE_SCRIPT = r'''
         const endpoint = arguments[0];
         const done = arguments[1];
-        const timer = setTimeout(() => done({timeout: true}), 8000);
+        let finished = false;
+        const finish = (payload) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          done(payload);
+        };
+        const timer = setTimeout(() => finish({timeout: true}), 10000);
         fetch(endpoint, {credentials: 'include'})
           .then(response => response.json())
           .then(payload => {
-            clearTimeout(timer);
             const data = payload.data || {};
-            done({
+            finish({
               code: payload.code,
               message: payload.message || '',
               lottery_id: data.lottery_id || '',
@@ -55,8 +69,7 @@ class DynamicShareBase(object):
             });
           })
           .catch(error => {
-            clearTimeout(timer);
-            done({error: String(error)});
+            finish({error: String(error)});
           });
     '''
 
@@ -79,6 +92,9 @@ class DynamicShareBase(object):
         self.publish_time = None
         self.current_user_name = None
         self.last_error = None
+        self.last_api_reason = None
+        self.detail_request_min_seconds = globals.detail_request_min_seconds
+        self.detail_request_max_seconds = globals.detail_request_max_seconds
 
     def share_one(
         self,
@@ -201,7 +217,7 @@ class DynamicShareBase(object):
         if timestamp > 10_000_000_000:
             timestamp //= 1000
         try:
-            return datetime.fromtimestamp(timestamp)
+            return datetime.fromtimestamp(timestamp, SHANGHAI_TZ).replace(tzinfo=None)
         except (OSError, OverflowError, ValueError):
             return None
 
@@ -216,43 +232,178 @@ class DynamicShareBase(object):
         if timestamp > 10_000_000_000:
             timestamp //= 1000
         try:
-            return str(datetime.fromtimestamp(timestamp))
+            return str(datetime.fromtimestamp(timestamp, SHANGHAI_TZ).replace(tzinfo=None))
         except (OSError, OverflowError, ValueError):
             return None
 
     RESERVE_RID_PATTERN = re.compile(r'["\']rid["\']\s*:\s*["\']?(\d+)')
 
+    DETAIL_SCRIPT = r'''
+const endpoint = arguments[0];
+const dynamicId = arguments[1];
+const features = arguments[2];
+const done = arguments[3];
+let finished = false;
+let timer = null;
+const finish = (payload) => {
+  if (finished) return;
+  finished = true;
+  clearTimeout(timer);
+  done(payload);
+};
+timer = setTimeout(() => finish({timeout: true}), 15000);
+const controller = new AbortController();
+const abortTimer = setTimeout(() => controller.abort(), 12000);
+let target = endpoint;
+if (features) {
+  target += '?id=' + encodeURIComponent(dynamicId)
+    + '&features=' + encodeURIComponent(features);
+} else {
+  target += '?id=' + encodeURIComponent(dynamicId);
+}
+fetch(target, {credentials: 'include', signal: controller.signal})
+  .then(response => response.json())
+  .then(payload => { clearTimeout(abortTimer); finish(payload); })
+  .catch(error => { clearTimeout(abortTimer); finish({error: String(error)}); });
+'''
+
+    def _request_detail_endpoint(
+        self,
+        bro,
+        dynamic_id,
+        endpoint,
+        features='',
+        reason_prefix='detail',
+    ):
+        try:
+            result = bro.execute_async_script(
+                self.DETAIL_SCRIPT, endpoint, dynamic_id, features
+            )
+        except Exception:
+            self.last_api_reason = '%s_request_error' % reason_prefix
+            return None
+        if not isinstance(result, dict):
+            self.last_api_reason = '%s_invalid_response' % reason_prefix
+            return None
+        if result.get('timeout'):
+            self.last_api_reason = '%s_timeout' % reason_prefix
+            return None
+        if result.get('error'):
+            self.last_api_reason = '%s_invalid_response' % reason_prefix
+            return None
+        code = result.get('code')
+        if code not in (None, 0):
+            self.last_api_reason = 'api_code:%s' % code
+            return None
+        item = ((result.get('data') or {}).get('item') or None)
+        if item is None:
+            self.last_api_reason = '%s_empty_detail' % reason_prefix
+        return item
+
     def _fetch_dynamic_detail_item(self, bro, lucky_dynamic_url):
         match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
         if not match:
+            self.last_api_reason = 'invalid_dynamic_url'
             return None
-        script = r'''
-const dynamicId = arguments[0];
-const done = arguments[1];
-const timer = setTimeout(() => done({timeout: true}), 8000);
-fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURIComponent(dynamicId), {credentials: 'include'})
-  .then(response => response.json())
-  .then(payload => { clearTimeout(timer); done(payload); })
-  .catch(error => { clearTimeout(timer); done({error: String(error)}); });
-'''
         try:
-            result = bro.execute_async_script(script, match.group(1))
+            random_sleep(
+                start=self.detail_request_min_seconds,
+                end=self.detail_request_max_seconds,
+            )
         except Exception:
-            return None
-        if not isinstance(result, dict) or result.get('timeout') or result.get('error'):
-            return None
-        return ((result.get('data') or {}).get('item') or None)
+            # 测试或本地调用中若没有可用的休眠实现，不能阻断校验。
+            pass
+        self.last_api_reason = 'detail_unavailable'
+        dynamic_id = match.group(1)
+        # B站对跨站 API 请求有来源风控：从 api.bilibili.com 页面直接
+        # fetch polymer detail 会稳定返回 -352，而从 www 页面发起正常。
+        try:
+            current_host = urlparse(bro.current_url).hostname or ''
+        except Exception:
+            current_host = ''
+        if not (current_host == 'www.bilibili.com'):
+            bro.get('https://www.bilibili.com/')
+        item = self._request_detail_endpoint(
+            bro,
+            dynamic_id,
+            'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail',
+        )
+        # Keep the primary item for official components even if its body is
+        # empty; otherwise opus fallback is still needed to recover plain text.
+        if item is not None and (
+            self._dynamic_item_text(item).strip()
+            or self._has_official_lottery_component(item)
+        ):
+            return item
+
+        # 新接口在限流/部分动态上可能返回 HTML 或 -9999；
+        # 旧版 opus detail 是独立入口，可作为一次无风险回退。
+        try:
+            random_sleep(
+                start=self.detail_request_min_seconds,
+                end=self.detail_request_max_seconds,
+            )
+        except Exception:
+            pass
+        fallback = self._request_detail_endpoint(
+            bro,
+            dynamic_id,
+            'https://api.bilibili.com/x/polymer/web-dynamic/v1/opus/detail',
+            features='htmlNewStyle,ugcDelete,editable,opusPrivateVisible',
+            reason_prefix='opus_detail',
+        )
+        if fallback is not None:
+            return self._normalize_dynamic_item(fallback)
+        return None
 
     @staticmethod
-    def _dynamic_item_text(item):
+    def _normalize_dynamic_item(item):
+        """将 opus/detail 的 modules 列表统一为 dynamic/detail 的字典结构。"""
+        if not isinstance(item, dict):
+            return item
+        modules = item.get('modules')
+        if not isinstance(modules, list):
+            return item
+        normalized_modules = {}
+        content_summary = {}
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            for key in ('module_stat', 'module_author', 'module_dynamic', 'module_title'):
+                if module.get(key):
+                    normalized_modules[key] = module[key]
+            content = module.get('module_content')
+            if isinstance(content, dict):
+                summary = content.get('summary') or {}
+                paragraphs = content.get('paragraphs') or []
+                content_summary = dict(summary) if isinstance(summary, dict) else {}
+                if paragraphs:
+                    content_summary['paragraphs'] = paragraphs
+        if 'module_dynamic' not in normalized_modules and content_summary:
+            normalized_modules['module_dynamic'] = {'desc': content_summary}
+        title = normalized_modules.get('module_title') or {}
+        if title.get('text'):
+            normalized_modules.setdefault('module_dynamic', {})['title'] = str(title['text'])
+        normalized = dict(item)
+        normalized['modules'] = normalized_modules
+        return normalized
+
+    @classmethod
+    def _dynamic_item_text(cls, item):
         if not isinstance(item, dict):
             return ''
         modules = item.get('modules') or {}
         if isinstance(modules, list):
             module_dynamic = {}
             for module in modules:
-                if isinstance(module, dict) and module.get('module_dynamic'):
+                if not isinstance(module, dict):
+                    continue
+                if module.get('module_dynamic'):
                     module_dynamic = module.get('module_dynamic') or {}
+                    break
+                content = module.get('module_content') or {}
+                if content:
+                    module_dynamic = {'desc': content.get('summary') or content}
                     break
         else:
             module_dynamic = modules.get('module_dynamic') or {}
@@ -265,7 +416,20 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         )
         if text.strip():
             return text
-        return str(desc.get('text') or '')
+        opus_parts = []
+        for paragraph in desc.get('paragraphs') or []:
+            paragraph_text = ((paragraph.get('text') or {}).get('nodes') or [])
+            for node in paragraph_text:
+                if not isinstance(node, dict):
+                    continue
+                word = node.get('word') or {}
+                value = word.get('words') or node.get('text')
+                if value:
+                    opus_parts.append(str(value))
+        if opus_parts:
+            return ' '.join(opus_parts)
+        title = (modules.get('module_title') or {}).get('text') if isinstance(modules, dict) else ''
+        return ' '.join(part for part in (title, desc.get('text') or '') if part)
 
     @classmethod
     def classify_lottery_item(cls, item):
@@ -302,12 +466,16 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         prize_words = ('元', '礼包', '奖品', '名额', '红包', '礼物', '门票', '周边', '卡', '券', '位')
         action_text = normalized.replace('&', '').replace('＋', '').replace('+', '')
         action_words = ('关注', '转发', '评论', '点赞', '预约', '参与', '@')
-        action_aliases = ('转赞评', '关转赞评', '关转评', '转评', '评论抽', '评论区抽', '关注转发评论')
+        action_aliases = (
+            '转赞评', '关转赞评', '关转评', '转评', '评论抽',
+            '评论区抽', '关注转发评论', '关转评',
+        )
         # “送出机械臂”这类奖品词可能本身不含“礼包/元/卡”等常见词，抽奖语义已足够。
         date_words = (
             '开奖', '截止', '日期', '月', '日', '时间',
             '下周五', '本周五', '周五', '下周一', '本周一',
         )
+        has_numeric_date = bool(re.search(r'\d{1,2}[./月-]\d{1,2}', normalized))
         if not any(word in normalized for word in giveaway_words):
             return result
         if not any(word in normalized for word in prize_words):
@@ -325,7 +493,7 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         ):
             result.update(kind='suspected_giveaway', reason='missing_action')
             return result
-        if not any(word in normalized for word in date_words):
+        if not any(word in normalized for word in date_words) and not has_numeric_date:
             result.update(kind='suspected_giveaway', reason='missing_concrete_time')
             return result
 
@@ -333,10 +501,11 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
             '转发' in normalized
             or '转赞评' in action_text
             or '转评' in action_text
+            or '关转评' in action_text
             or '关&转' in normalized
         )
-        has_comment = '评论' in normalized or '留言' in normalized
-        has_follow = '关注' in normalized
+        has_comment = '评论' in normalized or '留言' in normalized or '评' in action_text
+        has_follow = '关注' in normalized or '关' in action_text
         has_like = '点赞' in normalized or '赞' in action_text
         has_reserve = '预约' in normalized
         if has_reserve:
@@ -373,14 +542,36 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
     def _has_official_lottery_component(item):
         if not isinstance(item, dict):
             return False
-        serialized = str(item).lower()
-        if 'rich_text_node_type_lottery' in serialized:
-            return True
-        if 'additional_type_lottery' in serialized:
-            return True
-        if 'additional_type_reserve' in serialized:
-            return True
-        if 'lottery/result?' in serialized:
+        # Walk the actual JSON structure instead of stringifying it.  The old
+        # serialized check could match unrelated text and gave false positives.
+        def walk(value, depth=0):
+            if depth > 8:
+                return False
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if isinstance(key, str) and key.lower() in (
+                        'rich_text_node_type_lottery',
+                        'additional_type_lottery',
+                        'additional_type_reserve',
+                    ):
+                        return True
+                    if isinstance(child, str):
+                        lowered = child.lower()
+                        if (
+                            'rich_text_node_type_lottery' in lowered
+                            or 'additional_type_lottery' in lowered
+                            or 'additional_type_reserve' in lowered
+                            or 'lottery/result?' in lowered
+                        ):
+                            return True
+                    if walk(child, depth + 1):
+                        return True
+            elif isinstance(value, list):
+                for child in value:
+                    if walk(child, depth + 1):
+                        return True
+            return False
+        if walk(item):
             return True
         try:
             if DynamicShareBase._extract_reserve_rid(item):
@@ -421,6 +612,39 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
             % (business_type, business_id)
         )
 
+    @staticmethod
+    def _parse_plain_text_deadline(text, now=None):
+        """Parse an explicit giveaway deadline from plain text as Shanghai time."""
+        if not text:
+            return None
+        normalized = str(text).replace('：', ':').replace('．', '.')
+        current = now or datetime.now(SHANGHAI_TZ)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=SHANGHAI_TZ)
+        # Prefer a date near the opening / draw wording, and require a time or
+        # an explicit "开奖" marker so unrelated dates are not used.
+        patterns = (
+            r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
+            r'(?P<month>\d{1,2})[/.-](?P<day>\d{1,2})\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
+            r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)(?=[^\n]{0,40}(?:开奖|抽取|截止|抽\d|[0-9]+个))',
+            r'(?:(?P<month>\d{1,2})[/.-](?P<day>\d{1,2}))(?=[^\n]{0,40}(?:开奖|抽取|截止|抱走|抽\d|[0-9]+个))',
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, normalized):
+                try:
+                    month = int(match.group('month'))
+                    day = int(match.group('day'))
+                    hour = int(match.group('hour')) if match.groupdict().get('hour') else 23
+                    minute = int(match.group('minute') or 0) if match.groupdict().get('minute') else 59
+                    year = current.year
+                    deadline = datetime(year, month, day, hour, minute, tzinfo=SHANGHAI_TZ)
+                    if deadline < current - timedelta(days=30):
+                        deadline = deadline.replace(year=year + 1)
+                    return str(deadline.replace(tzinfo=None))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        return None
+
     def fetch_official_lottery_notice(self, bro, lucky_dynamic_url, retries=3):
         """返回结构化官方抽奖校验结果，不执行任何社交动作。"""
         match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
@@ -439,13 +663,16 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
             return {
                 'confirmed': False,
                 'retryable': True,
-                'reason': 'detail_unavailable',
+                'reason': self.last_api_reason or 'detail_unavailable',
             }
         classification = self.classify_lottery_item(item)
         has_official_component = self._has_official_lottery_component(item)
         if isinstance(item, dict) and not has_official_component:
             if classification.get('confirmed'):
                 self.lottery_source = 'plain_text'
+                plain_text_deadline = self._parse_plain_text_deadline(
+                    classification.get('text') or ''
+                )
                 return {
                     'confirmed': True,
                     'retryable': False,
@@ -453,7 +680,7 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
                     'source': 'plain_text',
                     'lottery_rule': classification,
                     'lottery_id': '',
-                    'lottery_end_time': None,
+                    'lottery_end_time': plain_text_deadline,
                     'status': None,
                 }
             # 详情里没有官方组件时，不能仅凭关键词判断不是抽奖；
@@ -504,7 +731,17 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
                         last_reason = 'code0_without_lottery_id'
                         break
                     last_reason = 'api_code:%s' % code
+                    # -9999/429/412 等系统性错误重试会继续放大限流。
+                    # 交给上层批级冷却，下一轮再验证该条。
+                    if code in (-9999, -429, 429, -412, 412, -352, -509):
+                        break
                 if attempt < attempts - 1:
+                    if last_reason in (
+                        'api_code:-9999', 'api_code:-429', 'api_code:429',
+                        'api_code:-412', 'api_code:412',
+                        'api_code:-352', 'api_code:-509',
+                    ):
+                        break
                     time.sleep(0.4 * (attempt + 1))
             if last_reason == 'code0_without_lottery_id':
                 continue
@@ -633,15 +870,32 @@ return null;
             up_id = bro.execute_async_script("""
 const dynamicId = arguments[0];
 const done = arguments[1];
-fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURIComponent(dynamicId), {credentials: 'include'})
+let finished = false;
+let timer = null;
+const finish = (payload) => {
+  if (finished) return;
+  finished = true;
+  clearTimeout(timer);
+  done(payload);
+};
+timer = setTimeout(() => finish(null), 12000);
+const controller = new AbortController();
+const abortTimer = setTimeout(() => controller.abort(), 9000);
+fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURIComponent(dynamicId), {credentials: 'include', signal: controller.signal})
   .then(response => response.json())
   .then(data => {
+    clearTimeout(abortTimer);
     const item = data.data && data.data.item;
-    const author = item && item.modules && item.modules.module_author;
+    const modules = item && item.modules;
+    let author = modules && modules.module_author;
+    if (!author && Array.isArray(modules)) {
+      const mod = modules.find((entry) => entry && entry.module_author);
+      author = mod && mod.module_author;
+    }
     const mid = author && (author.mid || author.uid);
-    done(mid ? String(mid) : null);
+    finish(mid ? String(mid) : null);
   })
-  .catch(() => done(null));
+  .catch(() => { clearTimeout(abortTimer); finish(null); });
 """, dynamic_id)
             if up_id and str(up_id).isdigit():
                 return str(up_id)
@@ -680,11 +934,29 @@ fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=' + encodeURI
         text = (ele.get_attribute('innerText') or ele.text or '').strip()
         return any(word in text for word in words)
 
+    @staticmethod
+    def _is_expired_deadline(value, now=None):
+        if value is None:
+            return False
+        if isinstance(value, datetime):
+            deadline = value
+        else:
+            try:
+                deadline = datetime.fromisoformat(str(value))
+            except (TypeError, ValueError):
+                return False
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=SHANGHAI_TZ)
+        current = now or datetime.now(SHANGHAI_TZ)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=SHANGHAI_TZ)
+        return current.timestamp() >= deadline.timestamp()
+
     def is_expired_dynamic(self, bro):
         if self.lottery_time is None:
             return False
         self.expire_date = str(self.lottery_time)
-        return datetime.now() >= self.lottery_time
+        return self._is_expired_deadline(self.lottery_time)
 
     def resolve_lottery_time(self, bro):
         metadata = self.get_dynamic_time_metadata(bro)
@@ -1100,14 +1372,15 @@ const fid = arguments[0];
 const csrf = arguments[1];
 const done = arguments[2];
 const body = new URLSearchParams({fid: fid, act: '1', re_src: '11', csrf: csrf, jsonp: 'jsonp'});
+let timer = setTimeout(() => done({code: -1, message: 'timeout'}), 10000);
 fetch('https://api.bilibili.com/x/relation/modify', {
   method: 'POST',
   credentials: 'include',
   headers: {'Content-Type': 'application/x-www-form-urlencoded'},
   body: body.toString(),
 }).then(response => response.json())
-  .then(data => done(data))
-  .catch(error => done({code: -1, message: String(error)}));
+  .then(data => { clearTimeout(timer); done(data); })
+  .catch(error => { clearTimeout(timer); done({code: -1, message: String(error)}); });
 """, fid, csrf)
         if not isinstance(result, dict):
             raise Exception('关注接口返回格式异常')
@@ -1142,10 +1415,11 @@ fetch('https://api.bilibili.com/x/relation/modify', {
             result = bro.execute_async_script("""
 const fid = arguments[0];
 const done = arguments[1];
+let timer = setTimeout(() => done({code: -1}), 8000);
 fetch('https://api.bilibili.com/x/relation?fid=' + encodeURIComponent(fid), {credentials: 'include'})
   .then(response => response.json())
-  .then(data => done(data))
-  .catch(() => done({}));
+  .then(data => { clearTimeout(timer); done(data); })
+  .catch(() => { clearTimeout(timer); done({}); });
 """, self.upId)
             if result.get('code') != 0:
                 return {'ok': False, 'followed': False, 'code': result.get('code')}

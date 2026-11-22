@@ -1,5 +1,6 @@
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from dao.draw_dynamic_dao import DrawDynamicDao
 from dao.init_db import init_db
@@ -13,11 +14,12 @@ from utils.webdriver_util import init_webdriver
 
 
 mylogger = MyLogger('verify_lottery_service.py').getLogger()
+SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
 
 
 class VerifyLotteryService(object):
-    RETRY_BACKOFF_MINUTES = 5
-    UNKNOWN_CIRCUIT_BREAKER = 8
+    RETRY_BACKOFF_MINUTES = 15
+    UNKNOWN_CIRCUIT_BREAKER = 1
 
     @staticmethod
     def _is_expired(lottery_end_time):
@@ -30,7 +32,9 @@ class VerifyLotteryService(object):
                 end_time = datetime.fromisoformat(str(lottery_end_time))
             except (TypeError, ValueError):
                 return False
-        return datetime.now() >= end_time
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=SHANGHAI_TZ)
+        return datetime.now(SHANGHAI_TZ).timestamp() >= end_time.timestamp()
 
     def __init__(
         self,
@@ -70,6 +74,7 @@ class VerifyLotteryService(object):
             'expired': 0,
             'skipped_recent': 0,
             'reverified_after_failure': 0,
+            'cooldown_started': 0,
         }
         eligible = []
         for candidate in candidates:
@@ -77,7 +82,8 @@ class VerifyLotteryService(object):
             if not url:
                 continue
             if self.scan_cache_dao.has_recent_failure(
-                'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0
+                'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
+                skip_statuses=('4',),
             ):
                 stats['skipped_recent'] += 1
                 continue
@@ -104,7 +110,10 @@ class VerifyLotteryService(object):
                         self.scan_cache_dao.save_success('lottery', url, source, note, 1)
                         stats['expired'] += 1
                         continue
-                    self.ready_dao.upsert(
+                    required_actions = (
+                        result.get('lottery_rule') or {}
+                    ).get('required_actions') or ''
+                    upsert_result = self.ready_dao.upsert(
                         url,
                         result.get('lottery_id') or '',
                         lottery_end_time,
@@ -114,10 +123,12 @@ class VerifyLotteryService(object):
                             else 'official'
                         ),
                         lottery_rule=str(result.get('lottery_rule') or ''),
-                        required_actions=str(
-                            (result.get('lottery_rule') or {}).get('required_actions') or ''
-                        ),
+                        required_actions=str(required_actions),
                     )
+                    if isinstance(upsert_result, str) and upsert_result.startswith('error:'):
+                        raise RuntimeError(
+                            '已确认抽奖但执行规则写入失败：%s' % upsert_result
+                        )
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     self.scan_cache_dao.save_success('lottery', url, source, note, 1)
                 elif not result.get('retryable'):
@@ -135,15 +146,15 @@ class VerifyLotteryService(object):
                         result.get('reason') or 'unknown',
                     )
                     consecutive_unknown += 1
-                    # 抽奖服务连续系统性报错时，本轮继续撞同一服务没有收益。
-                    # 该条不会进入 24 小时全局冻结，下轮轮转继续。
+                    # 详情或开奖接口一旦出现系统性异常，继续请求只会加重限流。
+                    # 立即结束本批，缓存中的失败时间会驱动下一轮冷却。
                     if consecutive_unknown >= self.UNKNOWN_CIRCUIT_BREAKER:
+                        stats['cooldown_started'] = 1
                         mylogger.warning(
                             '抽奖接口连续 %s 条无法确认，提前结束本轮验证并保留待重试',
                             consecutive_unknown,
                         )
                         break
-                    time.sleep(0.5)
                 if self.pause_seconds:
                     time.sleep(self.pause_seconds)
         finally:

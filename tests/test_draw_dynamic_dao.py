@@ -23,6 +23,22 @@ class DrawDynamicDaoTests(unittest.TestCase):
         )
         self.assertIn('limit 3', sql)
 
+    def test_status_update_also_clears_duplicate_url_form(self):
+        db = Mock()
+        dao = DrawDynamicDao(db)
+
+        dao.update_sharedUrl('https://www.bilibili.com/opus/1268647448530649174', 5)
+
+        db.update.assert_called_once_with(
+            't_draw_dynamic',
+            {'status': '5'},
+            {'dyn_url': 'https://www.bilibili.com/opus/1268647448530649174'},
+        )
+        update_sql, update_args = db.cur.execute.call_args.args
+        self.assertIn('LIKE', update_sql)
+        self.assertEqual(update_args, ('5', '%/1268647448530649174', 'https://www.bilibili.com/opus/1268647448530649174'))
+        db.con.commit.assert_called_once()
+
     def test_verification_priority_is_fair_round_robin(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]
@@ -33,6 +49,7 @@ class DrawDynamicDaoTests(unittest.TestCase):
         self.assertEqual(rows, db.select_db.return_value)
         sql = db.select_db.call_args.args[0].lower()
         self.assertIn("d.status in ('0', '3')", sql)
+        self.assertIn('1250000000000000000', sql)
         self.assertIn('left join t_scan_cache', sql)
         self.assertIn("c.scan_type = 'lottery'", sql)
         self.assertIn('c.update_time is null', sql)

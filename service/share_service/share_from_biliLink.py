@@ -44,7 +44,13 @@ class BiliLinkShare(object):
         try:
             datas = self.get_today_dynamic_links()
             if not datas:
-                mylogger.info('暂无已确认的官方抽奖，跳过本轮转发')
+                # Verification and action batches run at different intervals.
+                # If the verifier just marked rows status 5, retry the action
+                # queue once before ending the cycle so it does not sit idle
+                # until the next 5-minute tick.
+                datas = self.get_today_dynamic_links()
+            if not datas:
+                mylogger.info('暂无已确认的抽奖，跳过本轮转发')
                 return
             if self.owns_browser and self.bro is None:
                 self.bro, self.chains = init_webdriver()

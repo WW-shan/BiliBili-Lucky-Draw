@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 
 
 class DrawDynamicDao(object):
@@ -45,6 +46,8 @@ class DrawDynamicDao(object):
         LEFT JOIN t_scan_cache c
           ON c.scan_type = 'lottery' AND c.scan_url = d.dyn_url
         WHERE d.status IN ('0', '3')
+          AND CAST(SUBSTRING_INDEX(d.dyn_url, '/', -1) AS UNSIGNED)
+              >= 1250000000000000000
         ORDER BY
           CASE WHEN c.update_time IS NULL THEN 0 ELSE 1 END,
           c.update_time ASC,
@@ -82,5 +85,19 @@ class DrawDynamicDao(object):
             params = {'status': str(status)}
             cond_dict = {'dyn_url': url}
             self.db.update(self.table_name, params, cond_dict)
+            # The same dynamic can be discovered from both t.bilibili.com and
+            # www.bilibili.com/opus. Keep both URL variants in sync; otherwise
+            # the stale variant remains in status 0 and the worker repeats the
+            # same detail request forever.
+            match = re.search(r'/(\d+)(?:\?|$)', str(url))
+            if match:
+                dynamic_id = match.group(1)
+                self.db.con.ping(reconnect=True)
+                self.db.cur.execute(
+                    "UPDATE " + self.table_name
+                    + " SET status = %s WHERE dyn_url LIKE %s AND dyn_url <> %s",
+                    (str(status), '%/' + dynamic_id, str(url)),
+                )
+                self.db.con.commit()
         except Exception as e:
             print(e)

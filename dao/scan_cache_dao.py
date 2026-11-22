@@ -45,14 +45,30 @@ class ScanCacheDao(object):
         row = self.query(scan_type, scan_url)
         return row is not None and str(row.get('status')) == '1'
 
-    def has_recent_failure(self, scan_type, scan_url, retry_hours):
-        if int(retry_hours) <= 0:
+    def has_recent_failure(self, scan_type, scan_url, retry_hours, skip_statuses=()):
+        if float(retry_hours) <= 0:
             return False
         row = self.query(scan_type, scan_url)
-        if row is None or str(row.get('status')) == '1':
+        if row is None or str(row.get('status')) in ('1',) + tuple(skip_statuses):
             return False
         last_update = row.get('update_time') or row.get('insert_time')
-        return last_update is not None and datetime.now() - last_update < timedelta(hours=int(retry_hours))
+        if last_update is None:
+            return False
+        # Compare inside MySQL so container/app timezone differences do not
+        # turn a 15-minute cooldown into an 8-hour one.
+        try:
+            self.db.con.ping(reconnect=True)
+            self.db.cur.execute(
+                '''SELECT 1 FROM %s
+                   WHERE scan_key = %%s
+                     AND COALESCE(update_time, insert_time) > NOW() - INTERVAL %%s MINUTE
+                   LIMIT 1'''
+                % self.table_name,
+                (self.build_key(scan_type, scan_url), int(float(retry_hours) * 60)),
+            )
+            return self.db.cur.fetchone() is not None
+        except Exception:
+            return True
 
     def save_success(self, scan_type, scan_url, source, note, link_count):
         self._upsert(scan_type, scan_url, source, note, '1', link_count, '')

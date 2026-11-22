@@ -1,7 +1,8 @@
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
-from service.lottery_service.verify_lottery_service import VerifyLotteryService
+from service.lottery_service.verify_lottery_service import VerifyLotteryService, SHANGHAI_TZ
 
 
 class VerifyLotteryServiceTests(unittest.TestCase):
@@ -156,6 +157,27 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         )
         service.scan_cache_dao.save_failure.assert_called_once()
 
+    def test_confirmed_lottery_deadline_today_is_not_expired_in_utc(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'}
+        ]
+        deadline = (datetime.now(SHANGHAI_TZ) + timedelta(hours=2)).strftime(
+            '%Y-%m-%d %H:%M:%S'
+        )
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': True,
+            'lottery_id': '456',
+            'lottery_end_time': deadline,
+            'reason': '',
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['confirmed'], 1)
+        self.assertEqual(stats['expired'], 0)
+        service.ready_dao.upsert.assert_called_once()
+
     def test_confirmed_but_expired_lottery_is_not_queued_for_action(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [
@@ -220,6 +242,46 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         self.assertEqual(stats['excluded'], 0)
         service.draw_dao.update_sharedUrl.assert_not_called()
         service.ready_dao.upsert.assert_not_called()
+
+    def test_first_retryable_api_failure_ends_batch_immediately(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/2', 'status': '0'},
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False,
+            'retryable': True,
+            'reason': 'api_code:-9999',
+        }
+
+        stats = service.verify_pending(limit=2)
+
+        self.assertEqual(stats['checked'], 1)
+        self.assertEqual(stats['deferred'], 1)
+        self.assertEqual(stats['cooldown_started'], 1)
+        self.assertEqual(
+            service.checker.fetch_official_lottery_notice.call_count,
+            1,
+        )
+
+    def test_detail_failure_does_not_make_multiple_notice_requests(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/2', 'status': '0'},
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False,
+            'retryable': True,
+            'reason': 'detail_unavailable',
+        }
+
+        stats = service.verify_pending(limit=2)
+
+        self.assertEqual(stats['deferred'], 1)
+        self.assertEqual(stats['cooldown_started'], 1)
+        self.assertEqual(service.checker.fetch_official_lottery_notice.call_count, 1)
 
     def test_consecutive_unknown_responses_stop_the_batch_early(self):
         service = self.build_service()

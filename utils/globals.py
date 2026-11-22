@@ -23,7 +23,7 @@ user = os.getenv("MYSQL_USER")
 passwd = os.getenv("MYSQL_PASSWORD")
 root_passwd = os.getenv("MYSQL_ROOT_PASSWORD")
 port = int(os.getenv("PORT"))
-charset = 'utf8'
+charset = 'utf8mb4'
 
 notify_switch = os.getenv("notify_switch")
 FangTang_KEY = os.getenv("FangTang_KEY")
@@ -81,6 +81,13 @@ action_interval_minutes = max(1, int(os.getenv("ACTION_INTERVAL_MINUTES", "5")))
 verify_batch_limit = max(1, int(os.getenv("VERIFY_BATCH_LIMIT", "10")))
 auto_run_on_start = os.getenv("AUTO_RUN_ON_START", "true").strip().lower() in ("1", "true", "yes", "y")
 share_batch_limit = max(1, int(os.getenv("SHARE_BATCH_LIMIT", "5")))
+detail_request_min_seconds = max(
+    0, int(os.getenv("DETAIL_REQUEST_MIN_SECONDS", "8"))
+)
+detail_request_max_seconds = max(
+    detail_request_min_seconds,
+    int(os.getenv("DETAIL_REQUEST_MAX_SECONDS", "15")),
+)
 
 if __name__ == '__main__':
     print(db_host)

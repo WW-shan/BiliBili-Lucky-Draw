@@ -83,7 +83,6 @@ class VerifyLotteryService(object):
                 continue
             if self.scan_cache_dao.has_recent_failure(
                 'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
-                skip_statuses=('4',),
             ):
                 stats['skipped_recent'] += 1
                 continue

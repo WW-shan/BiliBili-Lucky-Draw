@@ -1,5 +1,5 @@
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 class ScanCacheDao(object):
@@ -45,14 +45,13 @@ class ScanCacheDao(object):
         row = self.query(scan_type, scan_url)
         return row is not None and str(row.get('status')) == '1'
 
-    def has_recent_failure(self, scan_type, scan_url, retry_hours, skip_statuses=()):
+    def has_recent_failure(self, scan_type, scan_url, retry_hours):
         if float(retry_hours) <= 0:
             return False
         row = self.query(scan_type, scan_url)
-        if row is None or str(row.get('status')) in ('1',) + tuple(skip_statuses):
+        if row is None or str(row.get('status')) == '1':
             return False
-        last_update = row.get('update_time') or row.get('insert_time')
-        if last_update is None:
+        if (row.get('update_time') or row.get('insert_time')) is None:
             return False
         # Compare inside MySQL so container/app timezone differences do not
         # turn a 15-minute cooldown into an 8-hour one.

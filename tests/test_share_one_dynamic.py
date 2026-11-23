@@ -824,6 +824,20 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertNotIn('comment', result['required_actions'])
         self.assertEqual(result['required_actions'], ['follow', 'forward'])
 
+    def test_plain_text_deadline_parses_dot_date_with_day_suffix(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '开奖时间：11.28日',
+            now=datetime(2026, 11, 20),
+        )
+        self.assertEqual(result, '2026-11-28 23:59:00')
+
+    def test_plain_text_deadline_parses_chinese_year_month_time(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '开奖时间：2026年12月15日下午18:00',
+            now=datetime(2026, 11, 20),
+        )
+        self.assertEqual(result, '2026-12-15 18:00:00')
+
     def test_draw_song_wording_with_date_is_parsed(self):
         text = '关注并转发本动态，我们将于11月16日抽送以下周边。'
         result = DynamicShareBase().parse_expire_date(

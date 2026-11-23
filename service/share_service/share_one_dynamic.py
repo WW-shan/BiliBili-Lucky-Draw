@@ -939,19 +939,26 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # Prefer a date near the opening / draw wording, and require a time or
         # an explicit "开奖" marker so unrelated dates are not used.
         patterns = (
-            r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
-            r'(?P<month>\d{1,2})[/.-](?P<day>\d{1,2})\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
+            r'(?:(?P<year>20\d{2})年)?\s*(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
+            r'(?P<month>\d{1,2})[./](?P<day>\d{1,2})[日号]?\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
             r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)(?=[^\n]{0,60}(?:开奖|抽取|截止|揪\d|抽\d|[0-9]+个))',
-            r'(?:(?P<month>\d{1,2})[/.-](?P<day>\d{1,2}))(?=[^\n]{0,40}(?:开奖|抽取|截止|抱走|抽\d|[0-9]+个))',
+            r'(?:(?P<month>\d{1,2})[/.-](?P<day>\d{1,2})[日号]?)(?=[^\n]{0,40}(?:开奖|抽取|截止|抱走|抽\d|[0-9]+个))',
+            r'(?:开奖|抽奖|截止)(?:时间|日期)?\s*[:：]?\s*(?P<month>\d{1,2})[./](?P<day>\d{1,2})[日号]?',
         )
         for pattern in patterns:
             for match in re.finditer(pattern, normalized):
                 try:
                     month = int(match.group('month'))
                     day = int(match.group('day'))
-                    hour = int(match.group('hour')) if match.groupdict().get('hour') else 23
-                    minute = int(match.group('minute') or 0) if match.groupdict().get('minute') else 59
-                    year = current.year
+                    groups = match.groupdict()
+                    hour = int(groups.get('hour')) if groups.get('hour') else 23
+                    minute = int(groups.get('minute') or 0) if groups.get('minute') else 59
+                    period = groups.get('period') or ''
+                    if ('下午' in period or '晚上' in period) and hour < 12:
+                        hour += 12
+                    elif '凌晨' in period and hour == 12:
+                        hour = 0
+                    year = int(groups.get('year')) if groups.get('year') else current.year
                     deadline = datetime(year, month, day, hour, minute, tzinfo=SHANGHAI_TZ)
                     if deadline < current - timedelta(days=30):
                         deadline = deadline.replace(year=year + 1)

@@ -102,6 +102,10 @@ class LotteryReadyDao(object):
         except Exception:
             return None
 
+    def delete_by_url(self, dyn_url):
+        sql = "DELETE FROM t_lottery_ready WHERE dyn_url = %s" % self._literal(dyn_url)
+        return self.db.executeCommit(sql)
+
     def query_ready(self, limit=10):
         sql = """
         SELECT d.*, r.lottery_id, r.lottery_kind, r.lottery_rule, r.required_actions, r.lottery_end_time, r.verified_at

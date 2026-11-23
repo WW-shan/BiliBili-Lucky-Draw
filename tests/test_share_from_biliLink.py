@@ -17,6 +17,7 @@ class BiliLinkShareTests(unittest.TestCase):
         service.draw_dynamic_dao = Mock()
         service.share_info_dao = Mock()
         service.follow_up_dao = Mock()
+        service.lottery_ready_dao = Mock()
         service.get_today_dynamic_links = Mock(return_value=[{'dyn_url': url}])
         service.get_ignore_link = Mock(return_value=[])
         return service
@@ -265,6 +266,35 @@ class BiliLinkShareTests(unittest.TestCase):
         dynamic_share.assert_not_called()
         service.share_info_dao.query_shareInfo_by_shareUrl.assert_not_called()
         service.bro.quit.assert_called_once_with()
+
+    def test_expired_dynamic_is_removed_from_ready_rule_queue(self):
+        service = self.build_service()
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+        dynamic = Mock()
+        dynamic.share_status = 2
+        dynamic.status = 2
+        dynamic.last_error = None
+
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase',
+            return_value=dynamic,
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_share_content',
+            return_value='share',
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_comment_content',
+            return_value='comment',
+        ):
+            service.do_share_by_links()
+
+        service.lottery_ready_dao.delete_by_url.assert_called_once_with(
+            'https://www.bilibili.com/opus/123'
+        )
 
     def test_expired_dynamic_is_removed_from_pending_queue(self):
         service = self.build_service()

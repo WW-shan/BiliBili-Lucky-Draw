@@ -143,6 +143,9 @@ class BiliLinkShare(object):
                     self.draw_dynamic_dao.update_sharedUrl(
                         url=lucky_dynamic_url, status=2
                     )
+                    # Remove the stale rule so the continuous ready queue cannot
+                    # select the same expired dynamic again on the next tick.
+                    self.lottery_ready_dao.delete_by_url(lucky_dynamic_url)
                     continue
                 if dyn.share_status == 4:
                     self.draw_dynamic_dao.update_sharedUrl(

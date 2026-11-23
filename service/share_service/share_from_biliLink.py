@@ -1,3 +1,5 @@
+import re
+
 from dao.draw_dynamic_dao import DrawDynamicDao
 from dao.follow_up_dao import FollowUpInfoDao
 from dao.init_db import init_db
@@ -102,15 +104,41 @@ class BiliLinkShare(object):
                             'B站安全风控（%s），已停止自动转发：%s'
                             % (evidence, lucky_dynamic_url)
                         )
-                    mylogger.warning(
-                        '单条动态参与失败，保留验证队列等待复验：%s，原因：%s',
-                        lucky_dynamic_url,
-                        dyn.last_error,
-                    )
-                    self.draw_dynamic_dao.update_sharedUrl(
-                        url=lucky_dynamic_url, status=0
-                    )
-                    continue
+                    # A stale t.bilibili.com shell can temporarily omit author
+                    # metadata. Retry the same dynamic once on the canonical
+                    # opus URL before putting it back into verification.
+                    if '未能从动态标题解析UP主UID' in str(dyn.last_error):
+                        canonical_url = self._canonical_opus_url(lucky_dynamic_url)
+                        if canonical_url and canonical_url != lucky_dynamic_url:
+                            mylogger.warning(
+                                'UP UID 解析失败，改用 opus 地址重试一次：%s',
+                                canonical_url,
+                            )
+                            dyn = DynamicShareBase()
+                            dyn.user_id = self.user_id
+                            dyn.share_one(
+                                self.bro,
+                                self.chains,
+                                canonical_url,
+                                get_random_share_content(),
+                                get_random_comment_content(),
+                                lottery_end_time=data.get('lottery_end_time'),
+                                lottery_kind=data.get('lottery_kind') or 'official',
+                                lottery_rule=data.get('lottery_rule'),
+                                required_actions=data.get('required_actions'),
+                            )
+                            if not dyn.last_error:
+                                lucky_dynamic_url = canonical_url
+                    if dyn.last_error:
+                        mylogger.warning(
+                            '单条动态参与失败，保留验证队列等待复验：%s，原因：%s',
+                            lucky_dynamic_url,
+                            dyn.last_error,
+                        )
+                        self.draw_dynamic_dao.update_sharedUrl(
+                            url=lucky_dynamic_url, status=0
+                        )
+                        continue
                 if dyn.share_status == 2:
                     self.draw_dynamic_dao.update_sharedUrl(
                         url=lucky_dynamic_url, status=2
@@ -156,6 +184,13 @@ class BiliLinkShare(object):
                     self.bro.quit()
                 except Exception:
                     mylogger.warning('关闭转发浏览器失败', exc_info=True)
+
+    @staticmethod
+    def _canonical_opus_url(url):
+        match = re.search(r'/(\d+)(?:\?|$)', str(url))
+        if not match:
+            return None
+        return 'https://www.bilibili.com/opus/' + match.group(1)
 
     def get_ignore_link(self):
         links = globals.ignore_link

@@ -158,6 +158,51 @@ class BiliLinkShareTests(unittest.TestCase):
             '456', 'https://space.bilibili.com/456', '35549700'
         )
 
+    def test_uid_parse_failure_retries_canonical_opus_once(self):
+        service = self.build_service()
+        service.get_today_dynamic_links.return_value = [{
+            'dyn_url': 'https://t.bilibili.com/1268647448530649174',
+            'lottery_kind': 'official',
+            'lottery_end_time': '2026-11-23 18:00:00',
+        }]
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+        first = Mock()
+        first.last_error = '未能从动态标题解析UP主UID'
+        first.get_risk_control_evidence.return_value = None
+        second = Mock()
+        second.last_error = None
+        second.share_status = 0
+        second.status = 0
+        second.upId = '3546802148084393'
+        second.upUrl = 'https://space.bilibili.com/3546802148084393'
+        second.share_time = '2026-11-23 05:00:00'
+
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase',
+            side_effect=[first, second],
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_share_content',
+            return_value='share',
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_comment_content',
+            return_value='comment',
+        ):
+            service.do_share_by_links()
+
+        second.share_one.assert_called_once()
+        self.assertEqual(
+            second.share_one.call_args.args[2],
+            'https://www.bilibili.com/opus/1268647448530649174',
+        )
+        service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1268647448530649174', status=1
+        )
+
     def test_risk_control_failure_stops_instead_of_being_silent(self):
         service = self.build_service()
         service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []

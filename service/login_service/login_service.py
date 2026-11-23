@@ -2,7 +2,7 @@ import json
 import time
 from urllib.parse import unquote, urlparse
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import InvalidCookieDomainException, TimeoutException
 from selenium.webdriver.support.wait import WebDriverWait
 from service.bilibili_errors import (
     BilibiliAuthenticationRequired,
@@ -87,7 +87,18 @@ class LoginService(object):
                             'SESSDATA 已过期，请更新登录会话。'
                         )
                     continue
-                self.bro.add_cookie(cookie)
+                try:
+                    self.bro.add_cookie(cookie)
+                except InvalidCookieDomainException:
+                    # Navigation can still be settling on an intermediate
+                    # origin; re-enter the Bilibili page before injecting.
+                    self.bro.get(globals.home_url)
+                    WebDriverWait(self.bro, 10).until(
+                        lambda driver: self._is_bilibili_host(
+                            urlparse(driver.current_url).hostname
+                        )
+                    )
+                    self.bro.add_cookie(cookie)
             self.bro.refresh()
             ensure_page_access(self.bro, globals.home_url)
 

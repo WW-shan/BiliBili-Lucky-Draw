@@ -87,6 +87,26 @@ class LoginServiceTests(unittest.TestCase):
         self.assertGreaterEqual(calls['n'], 2)
         self.assertEqual(browser.cookies[0]['name'], 'SESSDATA')
 
+    def test_cookie_login_retries_after_invalid_cookie_domain(self):
+        browser = FakeBrowser('{"code":0,"data":{"isLogin":true,"mid":35549700}}')
+        original_add = browser.add_cookie
+        attempts = {'n': 0}
+
+        def flaky_add(cookie):
+            attempts['n'] += 1
+            if attempts['n'] == 1:
+                from selenium.common.exceptions import InvalidCookieDomainException
+                raise InvalidCookieDomainException('invalid cookie domain')
+            original_add(cookie)
+
+        browser.add_cookie = flaky_add
+
+        uid = LoginService(browser, None, 'placeholder').login_by_cookie()
+
+        self.assertEqual(uid, '35549700')
+        self.assertGreaterEqual(attempts['n'], 2)
+        self.assertEqual(browser.cookies[0]['name'], 'SESSDATA')
+
     def test_cookie_login_restores_all_cookies_from_header(self):
         browser = FakeBrowser('{"code":0,"data":{"isLogin":true,"mid":35549700}}')
 

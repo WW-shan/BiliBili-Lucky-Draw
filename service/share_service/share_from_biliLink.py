@@ -19,7 +19,7 @@ from utils import globals
 from utils.globals import get_random_comment_content, get_random_share_content
 from utils.ip_util import remove_query_string
 from utils.time_util import random_sleep
-from utils.webdriver_util import init_webdriver
+from utils.webdriver_util import force_delete_selenium_session, init_webdriver
 
 mylogger = MyLogger('share_from_biliLick.py').getLogger()
 
@@ -184,6 +184,7 @@ class BiliLinkShare(object):
                     self.bro.quit()
                 except Exception:
                     mylogger.warning('关闭转发浏览器失败', exc_info=True)
+                force_delete_selenium_session(self.bro)
 
     @staticmethod
     def _canonical_opus_url(url):

@@ -103,6 +103,24 @@ def online_driver():
             pass
         raise
 
+def force_delete_selenium_session(driver):
+    """Best-effort DELETE for a session whose quit() did not release the slot."""
+    if driver is None:
+        return False
+    session_id = getattr(driver, 'session_id', None)
+    if not session_id:
+        return False
+    base = globals.selenium_url.rstrip('/')
+    request = urllib.request.Request(
+        base + '/session/' + str(session_id), method='DELETE'
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10):
+            return True
+    except Exception:
+        return False
+
+
 def cleanup_stale_selenium_sessions():
     """Delete sessions left behind by a previous worker process."""
     base = globals.selenium_url.rstrip('/')

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from utils import globals
-from utils.webdriver_util import ElementUtil, cleanup_stale_selenium_sessions, online_driver
+from utils.webdriver_util import ElementUtil, cleanup_stale_selenium_sessions, force_delete_selenium_session, online_driver
 
 
 class WebDriverOptionsTests(unittest.TestCase):
@@ -50,6 +50,23 @@ class WebDriverOptionsTests(unittest.TestCase):
 
         self.assertEqual(removed, 2)
         self.assertEqual(urlopen.call_count, 3)
+
+    def test_force_delete_session_calls_selenium_delete_endpoint(self):
+        driver = Mock()
+        driver.session_id = 'stale-session'
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+
+        with patch('utils.webdriver_util.urllib.request.urlopen') as urlopen:
+            urlopen.return_value.__enter__ = Mock(return_value=response)
+            urlopen.return_value.__exit__ = Mock(return_value=False)
+            result = force_delete_selenium_session(driver)
+
+        self.assertTrue(result)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_method(), 'DELETE')
+        self.assertTrue(request.full_url.endswith('/session/stale-session'))
 
     @patch('utils.webdriver_util.webdriver.Remote')
     def test_online_driver_cleans_up_when_timeout_configuration_fails(self, remote):

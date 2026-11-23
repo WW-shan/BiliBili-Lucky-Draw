@@ -11,7 +11,7 @@ from service.log_service.log_printer_service import MyLogger
 from service.login_service.login_service import LoginService
 from service.share_service.share_one_dynamic import DynamicShareBase
 from utils import globals
-from utils.webdriver_util import init_webdriver
+from utils.webdriver_util import force_delete_selenium_session, init_webdriver
 
 
 mylogger = MyLogger('verify_lottery_service.py').getLogger()
@@ -198,6 +198,7 @@ class VerifyLotteryService(object):
                     self.bro.quit()
                 except Exception:
                     mylogger.warning('关闭抽奖验证浏览器失败', exc_info=True)
+                force_delete_selenium_session(self.bro)
         stats['elapsed_seconds'] = round(time.monotonic() - batch_started, 2)
         mylogger.info('抽奖资格验证完成：%s', stats)
         return stats

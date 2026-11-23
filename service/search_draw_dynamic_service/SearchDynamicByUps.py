@@ -22,7 +22,7 @@ from service.log_service.log_printer_service import MyLogger
 from service.login_service.login_service import LoginService
 from service.notify_service.notify_service import NotifyService
 from utils.ip_util import remove_query_string
-from utils.webdriver_util import init_webdriver
+from utils.webdriver_util import force_delete_selenium_session, init_webdriver
 from utils import globals
 
 
@@ -889,6 +889,7 @@ class SearchDynamicByUps(object):
                     browser.quit()
                 except Exception:
                     mylogger.warning('关闭 Selenium 浏览器失败', exc_info=True)
+                force_delete_selenium_session(browser)
 
 
 if __name__ == '__main__':

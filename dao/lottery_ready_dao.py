@@ -80,6 +80,28 @@ class LotteryReadyDao(object):
         )
         return self.db.executeCommit(sql)
 
+    def restore_live_ready_statuses(self):
+        sql = """
+        UPDATE t_draw_dynamic d
+        JOIN t_lottery_ready r ON r.dyn_url = d.dyn_url
+        SET d.status = '5'
+        WHERE d.status IN ('0', '2')
+          AND (r.lottery_end_time IS NULL OR r.lottery_end_time > NOW())
+          AND NOT EXISTS (
+              SELECT 1 FROM t_share_info s
+              WHERE s.share_url = d.dyn_url AND s.user_id = '35549700'
+          )
+        """
+        return self.db.executeCommit(sql)
+
+    def query_by_url(self, dyn_url):
+        sql = "SELECT * FROM t_lottery_ready WHERE dyn_url = %s LIMIT 1" % self._literal(dyn_url)
+        try:
+            rows = self.db.select_db(sql) or []
+            return rows[0] if rows else None
+        except Exception:
+            return None
+
     def query_ready(self, limit=10):
         sql = """
         SELECT d.*, r.lottery_id, r.lottery_kind, r.lottery_rule, r.required_actions, r.lottery_end_time, r.verified_at

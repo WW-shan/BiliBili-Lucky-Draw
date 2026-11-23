@@ -283,6 +283,27 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         )
 
 
+    def test_existing_live_rule_is_not_downgraded_by_duplicate_verification(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1268647448530649174', 'status': '0'}
+        ]
+        service.ready_dao.query_by_url.return_value = {
+            'dyn_url': 'https://www.bilibili.com/opus/1268647448530649174',
+            'lottery_end_time': '2099-01-01 00:00:00',
+        }
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False, 'retryable': True, 'reason': 'timeout'
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['checked'], 0)
+        service.checker.fetch_official_lottery_notice.assert_not_called()
+        service.draw_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1268647448530649174', status='5'
+        )
+
     def test_unknown_response_is_deferred_not_excluded(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [

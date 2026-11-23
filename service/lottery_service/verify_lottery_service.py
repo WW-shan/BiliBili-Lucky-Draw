@@ -97,6 +97,12 @@ class VerifyLotteryService(object):
                 # t.bilibili.com/<id> and www.bilibili.com/opus/<id> are the
                 # same object; verify it once and sync both rows together.
                 continue
+            existing_rule = self.ready_dao.query_by_url(url)
+            if isinstance(existing_rule, dict) and existing_rule:
+                if not self._is_expired(existing_rule.get('lottery_end_time')):
+                    self.draw_dao.update_sharedUrl(url=url, status='5')
+                    stats['skipped_recent'] += 1
+                    continue
             if self.scan_cache_dao.has_recent_failure(
                 'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
             ):
@@ -180,6 +186,13 @@ class VerifyLotteryService(object):
                 if self.pause_seconds:
                     time.sleep(self.pause_seconds)
         finally:
+            # Rules are the source of truth. A duplicate URL can otherwise be
+            # reset to status 0/2 by a stale verification pass after a valid
+            # rule was written.
+            try:
+                self.ready_dao.restore_live_ready_statuses()
+            except Exception:
+                mylogger.warning('恢复有效抽奖执行状态失败', exc_info=True)
             if self.owns_browser and self.bro is not None:
                 try:
                     self.bro.quit()

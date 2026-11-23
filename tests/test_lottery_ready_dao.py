@@ -69,6 +69,29 @@ class LotteryReadyDaoTests(unittest.TestCase):
         statements = [call.args[0] for call in db.executeCommit.call_args_list]
         self.assertTrue(any('CONVERT TO CHARACTER SET utf8mb4' in s for s in statements))
 
+    def test_restore_live_ready_statuses_prefers_rule_over_stale_url_status(self):
+        db = Mock()
+        dao = LotteryReadyDao(db)
+
+        dao.restore_live_ready_statuses()
+
+        sql = db.executeCommit.call_args.args[0].lower()
+        self.assertIn("d.status = '5'", sql)
+        self.assertIn("d.status in ('0', '2')", sql)
+        self.assertIn('r.lottery_end_time > now()', sql)
+        self.assertIn('not exists', sql)
+
+    def test_query_by_url_returns_single_rule(self):
+        db = Mock()
+        db.select_db.return_value = [{'dyn_url': 'ready', 'lottery_end_time': '2099-01-01'}]
+        dao = LotteryReadyDao(db)
+        db.select_db.reset_mock()
+
+        row = dao.query_by_url('ready')
+
+        self.assertEqual(row['dyn_url'], 'ready')
+        self.assertIn("dyn_url = 'ready'", db.select_db.call_args.args[0])
+
     def test_query_ready_uses_verified_status_and_expiry_order(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]

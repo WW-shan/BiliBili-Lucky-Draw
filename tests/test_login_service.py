@@ -68,6 +68,25 @@ class LoginServiceTests(unittest.TestCase):
         self.assertIn('https://api.bilibili.com/x/web-interface/nav', browser.visited)
         self.assertEqual(browser.cookies[0]['name'], 'SESSDATA')
 
+    def test_cookie_login_retries_home_navigation_before_cookie_injection(self):
+        browser = FakeBrowser('{"code":0,"data":{"isLogin":true,"mid":35549700}}')
+        original_get = browser.get
+        calls = {'n': 0}
+
+        def flaky_get(url):
+            original_get(url)
+            calls['n'] += 1
+            if calls['n'] == 1:
+                browser.current_url = 'https://example.com/'
+
+        browser.get = flaky_get
+
+        uid = LoginService(browser, None, 'placeholder').login_by_cookie()
+
+        self.assertEqual(uid, '35549700')
+        self.assertGreaterEqual(calls['n'], 2)
+        self.assertEqual(browser.cookies[0]['name'], 'SESSDATA')
+
     def test_cookie_login_restores_all_cookies_from_header(self):
         browser = FakeBrowser('{"code":0,"data":{"isLogin":true,"mid":35549700}}')
 

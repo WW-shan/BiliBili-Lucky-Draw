@@ -851,6 +851,31 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         share.wait_share_success.assert_called_once_with(browser)
 
+    def test_up_uid_falls_back_to_www_opus_without_dynamic_api(self):
+        browser = Mock()
+        browser.current_url = 'https://t.bilibili.com/1268647448530649174'
+        share = DynamicShareBase()
+        share.get_up_id_from_initial_state = Mock(side_effect=[None, '3546802148084393'])
+        share.get_up_id_from_dynamic_api = Mock(return_value=None)
+        share.get_visible_elements = Mock(return_value=[])
+
+        share.get_up_info(browser)
+
+        self.assertEqual(share.upId, '3546802148084393')
+
+    def test_up_uid_falls_back_to_www_opus_when_t_bilibili_lacks_author(self):
+        browser = Mock()
+        browser.current_url = 'https://t.bilibili.com/1268647448530649174'
+        share = DynamicShareBase()
+        share.get_up_id_from_initial_state = Mock(side_effect=[None, '3546802148084393'])
+        share.get_up_id_from_dynamic_api = Mock(side_effect=[None, '3546802148084393'])
+        share.get_visible_elements = Mock(return_value=[])
+
+        share.get_up_info(browser)
+
+        self.assertEqual(share.upId, '3546802148084393')
+        browser.get.assert_any_call('https://www.bilibili.com/opus/1268647448530649174')
+
     def test_follow_uses_csrf_relation_api_instead_of_requiring_profile_button(self):
         browser = Mock()
         browser.get_cookies.return_value = [

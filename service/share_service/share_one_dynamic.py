@@ -908,6 +908,23 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             self.upId = self.upIds[0]
             self.upUrl = self.upUrls[0]
             return
+
+        # t.bilibili.com pages sometimes render without author metadata. The
+        # canonical opus URL uses the same dynamic id and exposes module_author.
+        dynamic_id = self.get_dynamic_id_from_url(bro.current_url)
+        if dynamic_id:
+            try:
+                bro.get('https://www.bilibili.com/opus/' + dynamic_id)
+                up_id = self.get_up_id_from_initial_state(bro)
+                if not up_id:
+                    up_id = self.get_up_id_from_dynamic_api(bro)
+                if up_id:
+                    self.add_up_id(up_id)
+                    self.upId = self.upIds[0]
+                    self.upUrl = self.upUrls[0]
+                    return
+            except Exception:
+                mylogger.warning('opus UID 兜底失败：%s', dynamic_id, exc_info=True)
         raise Exception("未能从动态标题解析UP主UID")
 
     def add_up_id(self, up_id):

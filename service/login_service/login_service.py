@@ -56,11 +56,21 @@ class LoginService(object):
 
         try:
             self.bro.get(globals.home_url)
-            WebDriverWait(self.bro, 10).until(
-                lambda driver: self._is_bilibili_host(
-                    urlparse(driver.current_url).hostname
+            try:
+                WebDriverWait(self.bro, 10).until(
+                    lambda driver: self._is_bilibili_host(
+                        urlparse(driver.current_url).hostname
+                    )
                 )
-            )
+            except TimeoutException:
+                # Selenium occasionally starts on an intermediate/blank origin.
+                # Navigate again before injecting domain cookies.
+                self.bro.get(globals.home_url)
+                WebDriverWait(self.bro, 10).until(
+                    lambda driver: self._is_bilibili_host(
+                        urlparse(driver.current_url).hostname
+                    )
+                )
             ensure_page_access(self.bro, globals.home_url)
 
             cookies = self._parse_cookie_value(cookie_value)

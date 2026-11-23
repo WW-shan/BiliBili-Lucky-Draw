@@ -14,6 +14,23 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIn('.side-toolbar__action.like', DynamicShareBase.LIKE_CSS)
         self.assertIn('.side-toolbar__action.forward', DynamicShareBase.FORWARD_CSS)
 
+    def test_forward_detection_checks_own_dynamic_feed_by_referenced_id(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1264178958128119833'
+        browser.execute_script.return_value = 'complete'
+        card = Mock()
+        card.get_attribute.return_value = '...1264178958128119833...'
+        card.find_elements.return_value = []
+        browser.find_elements.return_value = [card]
+        share.get_visible_elements = Mock(side_effect=[[], [card]])
+        self.assertTrue(
+            share.is_already_forwarded(browser, 'https://www.bilibili.com/opus/1264178958128119833')
+        )
+        browser.get.assert_any_call('https://space.bilibili.com/35549700/dynamic')
+        browser.get.assert_any_call('https://www.bilibili.com/opus/1264178958128119833')
+
     def test_share_flow_uses_opus_toolbar_and_confirms_forward(self):
         browser = Mock()
         chains = Mock()
@@ -188,6 +205,31 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertIn('module_dynamic', normalized['modules'])
         self.assertIn('12月5号开奖', DynamicShareBase._dynamic_item_text(normalized))
+
+    def test_short_primary_text_falls_back_to_longer_opus_text(self):
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/'
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+        short_item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '短视频预告'},
+        ]}}}}
+        long_item = {'modules': [{'module_content': {'summary': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，11月25日抽1位送零食箱。'},
+        ]}}}]}
+        browser.execute_async_script.side_effect = [
+            {'code': 0, 'data': {'item': short_item}},
+            {'code': 0, 'data': {'item': long_item}},
+        ]
+
+        item = share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/1271215276335038485'
+        )
+
+        self.assertIn('11月25日', share._dynamic_item_text(item))
+        self.assertEqual(browser.execute_async_script.call_count, 2)
+        self.assertIn('opus/detail', browser.execute_async_script.call_args_list[-1].args[1])
 
     def test_detail_api_falls_back_to_opus_detail_before_giving_up(self):
         browser = Mock()
@@ -389,18 +431,15 @@ class ShareOneDynamicTests(unittest.TestCase):
 
     def test_non_giveaway_social_text_does_not_call_official_notice(self):
         browser = Mock()
-        browser.execute_async_script.return_value = {
-            'code': 0,
-            'data': {'item': {'modules': {'module_dynamic': {
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {
                 'desc': {'rich_text_nodes': [
                     {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '比赛真看爽了吧'},
                 ]},
                 'major': {'type': 'MAJOR_TYPE_OPUS'},
-            }}}},
-        }
-        share = DynamicShareBase()
-        share.detail_request_min_seconds = 0
-        share.detail_request_max_seconds = 0
+            }},
+        })
 
         result = share.fetch_official_lottery_notice(
             browser, 'https://www.bilibili.com/opus/123', retries=1
@@ -408,7 +447,7 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertFalse(result['confirmed'])
         self.assertFalse(result['retryable'])
-        self.assertEqual(browser.execute_async_script.call_count, 1)
+        browser.execute_async_script.assert_not_called()
 
     def test_ambiguous_prize_wording_is_not_auto_confirmed(self):
         item = {'modules': {'module_dynamic': {
@@ -582,6 +621,150 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['retryable'])
         self.assertIn('detail', result['reason'])
 
+    def test_real_giveaway_mentioning_follow_me_is_not_filtered_as_ad(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '做视频这么久，离不开各位小伙伴的陪伴。福利安排上！抽1位宝子送1个【尼康礼盒】。'
+                '开奖时间为11月25日下午17:00。【参与方式】：转发本条动态+评论+关注我，就可以参与抽奖啦！'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['kind'], 'plain_text_lottery')
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'forward'])
+
+    def test_real_collection_post_is_still_filtered_as_context(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '抽奖合集更新！【置顶抽奖①】开奖日期12.20，奖品为手机。'
+                '【置顶抽奖②】开奖日期12.1，奖品为耳机。给up添加特别关注，第一时间收到合集更新通知。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['kind'], 'context_or_ad')
+
+    def test_live_giveaway_with_draw_and_prize_is_not_result_notice(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '十一月抽奖来了！【关注点赞转发评论抽奖】参与方式：关注+点赞+评论+转发本条动态，即可参与抽奖！'
+                '奖品：南卡Clip E耳夹式耳机*1。【开奖日期】2026年11月25日晚上20:00开奖！名单届时也会动态公布！'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['kind'], 'plain_text_lottery')
+
+    def test_deadline_or_draw_wording_does_not_make_live_giveaway_a_result(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '即日起~11月27日14:00关注+评论本条动态，抽5位送【哈根达斯兑换券35元*1】。'
+                '11月27日开奖，我们会在评论区公布获奖名单，并私信获奖用户。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['required_actions'], ['follow', 'comment'])
+
+    def test_five_lian_emoji_is_parsed_as_like_comment_forward(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '🎁邀请尝鲜🎁 📝：5️⃣连 💬：你喜欢联名零食的哪一个口味？ '
+                '⏰：即日起～12月18日15:00 🎁：揪1️⃣只小龙包→联名零食*1箱'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['required_actions'], ['comment', 'like', 'forward'])
+
+    def test_plq_comment_abbreviation_is_parsed_as_comment(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '在本条plq💬对腾哥的获奖祝福，11月23日12点随机🤏1位送早餐蛋！'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['required_actions'], ['comment'])
+
+    def test_giveaway_with_prize_and_date_but_no_action_needs_review(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                'PS5/Xbox接上领航M8，HDR把霓虹氛围感拉满。11.26抽一位小伙伴送【HKC帆布袋】'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'missing_action')
+
+    def test_ampersand_compact_four_actions_include_comment(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关&转&赞&评本动态，11月25日抽5位送出轴体。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(
+            sorted(result['required_actions']),
+            sorted(['follow', 'comment', 'like', 'forward']),
+        )
+
+    def test_emoji_pig_heart_star_comment_maps_to_social_actions(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '参与方式：🐷+❤️+⭐️+💬，11月25日抽1位送耳机。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(
+            sorted(result['required_actions']),
+            sorted(['follow', 'like', 'comment', 'favorite']),
+        )
+
+    def test_compressed_single_character_actions_are_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                'GT3 六连劝，条条对你好 239首发价，新品已发售，速速冲鸭~ 关转赞评，11.25竞妹jiu一宝带走新品GT3！'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(
+            sorted(result['required_actions']),
+            sorted(['follow', 'like', 'comment', 'forward']),
+        )
+
+    def test_emoji_and_symbol_compressed_giveaway_actions_are_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '抓1位幸运玩家🉐 🎁【那个游戏6➕游戏手柄】*1 参与方式：关+赞 + 转+评 活动时间：11.17-11.26'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(
+            sorted(result['required_actions']),
+            sorted(['follow', 'like', 'comment', 'forward']),
+        )
+
+    def test_book_giveaway_with_follow_and_forward_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '以防你不知道《地图谜案》中文版引进了 关注+转发此动态，抽3位送出《地图谜案》一本～'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['required_actions'], ['follow', 'forward'])
+
+    def test_giveaway_with_unknown_prize_noun_but_explicit_actions_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '关注+转发+评论，12月15日开奖，一等奖【运动水壶吨吨桶】，二等奖【京东卡50元】。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'forward'])
+
     def test_giveaway_result_announcement_is_not_participable(self):
         item = {
             'modules': {'module_dynamic': {
@@ -597,17 +780,15 @@ class ShareOneDynamicTests(unittest.TestCase):
 
     def test_incomplete_text_giveaway_is_reviewed_not_auto_executed(self):
         browser = Mock()
-        unknown = {'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None}
-        browser.execute_async_script.side_effect = [
-            {'code': 0, 'data': {'item': {'modules': {'module_dynamic': {
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {
                 'desc': {'rich_text_nodes': [
                     {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注转发评论参与抽奖'},
                 ]},
                 'major': {'type': 'MAJOR_TYPE_OPUS'},
-            }}}}},
-            unknown, unknown, unknown, unknown, unknown, unknown,
-        ]
-        share = DynamicShareBase()
+            }},
+        })
 
         result = share.fetch_official_lottery_notice(
             browser, 'https://www.bilibili.com/opus/123'
@@ -616,7 +797,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertFalse(result['confirmed'])
         self.assertTrue(result['retryable'])
         self.assertEqual(result['reason'], 'missing_prize')
-        self.assertEqual(browser.execute_async_script.call_count, 1)
+        browser.execute_async_script.assert_not_called()
 
     def test_deadline_is_parsed_from_numbered_chinese_giveaway_time(self):
         self.assertEqual(
@@ -625,6 +806,124 @@ class ShareOneDynamicTests(unittest.TestCase):
             ),
             '2026-11-27 23:59:00',
         )
+
+    def test_explicit_month_only_activity_uses_month_end(self):
+        text = '小驰的10月影驰日抽奖来啦，关注并转发此动态参与。'
+        result = DynamicShareBase().parse_expire_date(
+            text, publish_time=datetime(2026, 10, 1)
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date().isoformat(), '2026-10-31')
+
+    def test_roundup_talk_copy_does_not_add_comment_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '聊聊本期播客，转+关抽两位送抱枕。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertNotIn('comment', result['required_actions'])
+        self.assertEqual(result['required_actions'], ['follow', 'forward'])
+
+    def test_draw_song_wording_with_date_is_parsed(self):
+        text = '关注并转发本动态，我们将于11月16日抽送以下周边。'
+        result = DynamicShareBase().parse_expire_date(
+            text, publish_time=datetime(2026, 11, 1)
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date().isoformat(), '2026-11-16')
+
+    def test_publish_date_is_not_used_as_deadline_without_draw_wording(self):
+        text = (
+            '蔚来_NIO 2026年11月20日 18:32 川西山河，自有一番辽阔气象。'
+            '关注并转发，评论区分享，我们将抽取1位朋友送出随行杯。'
+        )
+        self.assertIsNone(
+            DynamicShareBase().parse_expire_date(
+                text, publish_time=datetime(2026, 11, 20, 8, 32)
+            )
+        )
+
+    def test_one_month_after_publish_is_relative_deadline(self):
+        result = DynamicShareBase().parse_expire_date(
+            '参与方式：关注并转发，一个月后开奖。',
+            publish_time=datetime(2026, 10, 25, 11, 18),
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date().isoformat(), '2026-11-25')
+
+    def test_plain_text_deadline_parses_month_only_activity(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '小驰的10月影驰日抽奖来啦，关注并转发。',
+            now=datetime(2026, 10, 1),
+        )
+        self.assertEqual(result, '2026-10-31 23:59:00')
+
+    def test_plain_text_deadline_parses_one_month_after(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '参与方式：关注并转发，一个月后开奖。',
+            now=datetime(2026, 10, 25, 11, 18, tzinfo=SHANGHAI_TZ),
+        )
+        self.assertEqual(result, '2026-11-25 23:59:00')
+
+    def test_plain_text_deadline_parses_next_friday(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '转赞评本条动态，下周五抽取两名幸运小伙伴。',
+            now=datetime(2026, 11, 16, 8, 45, tzinfo=SHANGHAI_TZ),
+        )
+        self.assertEqual(result, '2026-11-27 23:59:00')
+
+    def test_next_friday_relative_deadline_is_future_from_publish(self):
+        text = '转赞评本条动态，下周五抽取两名幸运小伙伴。'
+        result = DynamicShareBase().parse_expire_date(
+            text, publish_time=datetime(2026, 11, 16)
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date().isoformat(), '2026-11-27')
+
+    def test_this_friday_relative_deadline_is_current_week(self):
+        text = '转赞评本条动态，本周五抽取两名幸运小伙伴。'
+        result = DynamicShareBase().parse_expire_date(
+            text, publish_time=datetime(2026, 11, 16)
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date().isoformat(), '2026-11-20')
+
+    def test_plain_text_deadline_parses_activity_range_end(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '活动时间：10月2日-11月16日 上午10:00，关注并转发抽1台手机。',
+            now=datetime(2026, 10, 2, tzinfo=SHANGHAI_TZ),
+        )
+        self.assertEqual(result, '2026-11-16 10:00:00')
+
+    def test_range_activity_end_date_is_parsed_as_deadline(self):
+        text = '活动时间：10月2日-11月16日 上午10:00，关注并转发抽1台手机。'
+        result = DynamicShareBase().parse_expire_date(
+            text, publish_time=datetime(2026, 10, 2)
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.month, 11)
+        self.assertEqual(result.day, 16)
+
+    def test_plain_text_branch_prefers_official_lottery_end_timestamp(self):
+        browser = Mock()
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，抽1位送周边。'},
+                ]},
+            }},
+        })
+        share.get_dynamic_time_metadata = Mock(return_value={
+            'lottery_end_ts': 1795190400, 'publish_ts': 1794542405,
+        })
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1270039030789046355', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['lottery_end_time'], '2026-11-21 00:00:00')
 
     def test_plain_text_giveaway_returns_parsed_deadline(self):
         browser = Mock()
@@ -672,6 +971,72 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['source'], 'plain_text')
         self.assertEqual(result['lottery_rule']['action'], 'forward')
+
+    def test_unrelated_rid_field_is_not_treated_as_reserve_lottery(self):
+        item = {'basic': {'rid_str': '999'}, 'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，11月25日抽1位送零食箱。'},
+            ]},
+            'additional': None,
+            'major': {'rid': '123'},
+        }}}
+        self.assertFalse(DynamicShareBase._has_official_lottery_component(item))
+        self.assertIsNone(DynamicShareBase._extract_reserve_rid(item))
+
+    def test_plain_text_title_does_not_count_as_official_lottery_component(self):
+        item = {'basic': {'title': '互动抽奖'}, 'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，11月25日抽1位送零食箱。'},
+            ]},
+            'additional': None,
+        }}}
+        self.assertFalse(DynamicShareBase._has_official_lottery_component(item))
+
+    def test_confirmed_text_giveaway_does_not_require_notice_when_component_is_only_hint(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': -9999, 'message': '服务系统错误', 'lottery_id': '', 'status': None,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，11月25日抽1位送零食箱。'},
+            ]},
+            'additional': {'lottery': {'lottery_id': ''}},
+        }}})
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1269266233012781059', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['source'], 'plain_text')
+        browser.execute_async_script.assert_not_called()
+
+    def test_official_lottery_preserves_confirmed_text_actions(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0, 'message': '', 'lottery_id': '430459',
+            'lottery_time': 2099999999, 'status': 0,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注我，转发此动态参与互动抽奖，奖品显卡。'},
+            ]},
+            'additional': {'lottery': {'lottery_id': '430459'}},
+        }}})
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1265584402380881924', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['lottery_id'], '430459')
+        self.assertEqual(
+            result['lottery_rule']['required_actions'],
+            ['follow', 'forward'],
+        )
 
     def test_zero_without_lottery_id_is_unknown_not_explicit_non_lottery(self):
         browser = Mock()

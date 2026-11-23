@@ -148,11 +148,11 @@ def cleanup_stale_selenium_sessions():
     return removed
 
 
-def init_webdriver():
+def init_webdriver(proxy_url=None):
 
     if globals.DRIVER_VERSION == 'Local':
         return local_driver()
     if globals.DRIVER_VERSION == 'Online':
-        return online_driver()
+        return online_driver(proxy_url=proxy_url)
     # 默认本地驱动
     return local_driver()

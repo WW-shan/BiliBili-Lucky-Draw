@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from service.bilibili_errors import BilibiliAuthenticationRequired
 from service.bilibili_errors import BilibiliVerificationRequired
 from service.share_service.share_from_biliLink import BiliLinkShare
+from utils import globals
 
 
 class BiliLinkShareTests(unittest.TestCase):
@@ -49,7 +50,8 @@ class BiliLinkShareTests(unittest.TestCase):
         service.lottery_ready_dao = Mock()
         service.lottery_ready_dao.query_ready.return_value = [{'dyn_url': 'ready'}]
 
-        rows = BiliLinkShare.get_today_dynamic_links(service)
+        with patch.object(globals, 'share_batch_limit', 20):
+            rows = BiliLinkShare.get_today_dynamic_links(service)
 
         self.assertEqual(rows, [{'dyn_url': 'ready'}])
         service.lottery_ready_dao.query_ready.assert_called_once_with(limit=20)
@@ -107,6 +109,39 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         login.assert_not_called()
+
+    def test_missing_up_info_does_not_write_none_follow_record(self):
+        service = self.build_service()
+        service.get_today_dynamic_links.return_value = [{
+            'dyn_url': 'https://www.bilibili.com/opus/123',
+        }]
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+        dynamic = Mock()
+        dynamic.share_status = 0
+        dynamic.status = 0
+        dynamic.upId = None
+        dynamic.upUrl = None
+        dynamic.share_time = '2026-11-20 12:00:00'
+        dynamic.last_error = None
+
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase',
+            return_value=dynamic,
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_share_content',
+            return_value='share',
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_comment_content',
+            return_value='comment',
+        ):
+            service.do_share_by_links()
+
+        service.follow_up_dao.saverUpdate.assert_not_called()
 
     def test_successful_share_records_result(self):
         service = self.build_service()

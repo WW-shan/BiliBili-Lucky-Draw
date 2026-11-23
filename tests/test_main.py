@@ -111,7 +111,7 @@ class MainWorkflowTests(unittest.TestCase):
             progressed = main.run_pipeline_iteration()
 
         self.assertFalse(progressed)
-        clock.sleep.assert_called_once_with(15 * 60)
+        clock.sleep.assert_not_called()
 
     def test_transient_selenium_session_failure_does_not_pause_worker(self):
         with patch.object(main, '_workflow_paused', False), patch.object(

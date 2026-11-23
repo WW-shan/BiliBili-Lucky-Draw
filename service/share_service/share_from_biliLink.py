@@ -156,7 +156,15 @@ class BiliLinkShare(object):
                 if dyn.share_status == 0:
                     self.draw_dynamic_dao.update_sharedUrl(url=lucky_dynamic_url, status=1)
                     self.share_info_dao.insert_shareInfo(dyn)
-                    self.follow_up_dao.saverUpdate(dyn.upId, dyn.upUrl, self.user_id)
+                    up_id = str(getattr(dyn, 'upId', '') or '').strip()
+                    up_url = str(getattr(dyn, 'upUrl', '') or '').strip()
+                    if up_id and up_id.lower() != 'none' and up_url and up_url.lower() != 'none':
+                        self.follow_up_dao.saverUpdate(up_id, up_url, self.user_id)
+                    else:
+                        mylogger.warning(
+                            '参与成功但未解析到UP信息，跳过关注记录写入：%s',
+                            lucky_dynamic_url,
+                        )
                     success_share_cnt = success_share_cnt + 1
                 else:
                     mylogger.warning('单条动态返回未知状态 %s：%s', dyn.share_status, lucky_dynamic_url)

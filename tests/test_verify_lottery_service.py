@@ -38,6 +38,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.scan_cache_dao = Mock()
         service.checker = Mock()
         service.pause_seconds = 0
+        service.min_current_dynamic_id = 0
         service.draw_dao.query_by_verification_priority.return_value = [
             {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
             {'dyn_url': 'https://www.bilibili.com/opus/2', 'status': '0'},
@@ -383,6 +384,26 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         self.assertEqual(stats['deferred'], 2)
         self.assertEqual(stats['cooldown_started'], 1)
         self.assertEqual(service.checker.fetch_official_lottery_notice.call_count, 2)
+
+    def test_stale_dynamic_ids_are_not_sent_to_notice_api(self):
+        service = self.build_service()
+        service.min_current_dynamic_id = service.MIN_CURRENT_DYNAMIC_ID
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://t.bilibili.com/597242548574751438', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/1273160016054976528', 'status': '0'},
+        ]
+        service.ready_dao.query_by_url.return_value = None
+        service.scan_cache_dao.has_recent_failure.return_value = False
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False, 'retryable': False, 'reason': 'not_lottery'
+        }
+
+        stats = service.verify_pending(limit=2)
+
+        self.assertEqual(stats['checked'], 1)
+        service.checker.fetch_official_lottery_notice.assert_called_once_with(
+            service.bro, 'https://www.bilibili.com/opus/1273160016054976528'
+        )
 
     def test_duplicate_url_forms_are_verified_only_once(self):
         service = self.build_service()

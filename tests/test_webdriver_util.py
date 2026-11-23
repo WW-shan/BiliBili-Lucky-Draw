@@ -33,6 +33,16 @@ class WebDriverOptionsTests(unittest.TestCase):
             globals.selenium_script_timeout
         )
 
+    def test_init_webdriver_forwards_proxy_to_online_driver(self):
+        with patch.object(globals, 'DRIVER_VERSION', 'Online'), patch(
+            'utils.webdriver_util.online_driver', return_value=('driver', 'chains')
+        ) as online:
+            from utils.webdriver_util import init_webdriver
+            result = init_webdriver(proxy_url='http://172.21.0.1:7897')
+
+        self.assertEqual(result, ('driver', 'chains'))
+        online.assert_called_once_with(proxy_url='http://172.21.0.1:7897')
+
     def test_startup_cleanup_removes_every_stale_selenium_session(self):
         status = {
             'value': {

@@ -39,6 +39,22 @@ class DrawDynamicDaoTests(unittest.TestCase):
         self.assertEqual(update_args, ('5', '%/1268647448530649174', 'https://www.bilibili.com/opus/1268647448530649174'))
         db.con.commit.assert_called_once()
 
+    def test_reset_excluded_to_pending_is_guarded_by_current_status(self):
+        db = Mock()
+        db.cur.rowcount = 1
+        dao = DrawDynamicDao(db)
+
+        rows = dao.reset_excluded_to_pending(
+            'https://www.bilibili.com/opus/1271567562424975400'
+        )
+
+        self.assertEqual(rows, 1)
+        sql,args = db.cur.execute.call_args.args
+        self.assertIn("SET status = '0'", sql)
+        self.assertIn("status = '4'", sql)
+        self.assertEqual(args, ('https://www.bilibili.com/opus/1271567562424975400',))
+        db.con.commit.assert_called_once()
+
     def test_verification_priority_is_fair_round_robin(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]

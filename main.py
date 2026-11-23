@@ -65,10 +65,10 @@ def run_pipeline_iteration():
             globals.verify_batch_limit
         )
         stats = stats if isinstance(stats, dict) else {}
-        # A visible Bilibili rate-limit cooldown must be honored.  Continuing
-        # immediately only repeats -9999 and does not make queue progress.
+        # The per-URL scan cache already enforces a 15-minute retry backoff
+        # for entries that hit -9999/risk control. Do not block the whole
+        # worker here: other pending entries and ready actions must continue.
         if stats.get('cooldown_started'):
-            time.sleep(15 * 60)
             return False
         progressed = bool(
             stats.get('checked')

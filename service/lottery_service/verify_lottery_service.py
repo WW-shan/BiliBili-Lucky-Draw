@@ -20,6 +20,7 @@ SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
 
 class VerifyLotteryService(object):
     RETRY_BACKOFF_MINUTES = 15
+    MIN_CURRENT_DYNAMIC_ID = 1_250_000_000_000_000_000
     # A transient timeout must not end the whole batch.  Circuit-break only
     # when the remote endpoint is visibly blocking us.
     UNKNOWN_CIRCUIT_BREAKER = 3
@@ -51,6 +52,7 @@ class VerifyLotteryService(object):
         chains=None,
         checker=None,
         pause_seconds=1.0,
+        min_current_dynamic_id=None,
     ):
         db = init_db()
         self.user_id = str(user_id)
@@ -59,6 +61,11 @@ class VerifyLotteryService(object):
         self.scan_cache_dao = ScanCacheDao(db)
         self.checker = checker or DynamicShareBase()
         self.pause_seconds = pause_seconds
+        self.min_current_dynamic_id = (
+            self.MIN_CURRENT_DYNAMIC_ID
+            if min_current_dynamic_id is None
+            else int(min_current_dynamic_id)
+        )
         self.bro = bro
         self.chains = chains
         self.owns_browser = bro is None
@@ -95,6 +102,13 @@ class VerifyLotteryService(object):
                 continue
             dynamic_match = re.search(r'/(\d+)(?:\?|$)', str(url))
             dynamic_id = dynamic_match.group(1) if dynamic_match else url
+            if dynamic_match and self.min_current_dynamic_id:
+                try:
+                    if int(dynamic_id) < self.min_current_dynamic_id:
+                        stats['excluded'] += 1
+                        continue
+                except (TypeError, ValueError):
+                    continue
             if dynamic_id in seen_dynamic_ids:
                 # t.bilibili.com/<id> and www.bilibili.com/opus/<id> are the
                 # same object; verify it once and sync both rows together.

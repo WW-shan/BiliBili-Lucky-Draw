@@ -1,3 +1,4 @@
+import calendar
 import json
 import re
 import time
@@ -32,6 +33,7 @@ class DynamicShareBase(object):
     FOLLOW_CSS = '.space-head-follow, .follow-btn, .space-follow-btn'
     LIKE_CSS = '.side-toolbar__action.like, .bili-dyn-action.like, [class*="side-toolbar__action"][class*="like"]'
     FORWARD_CSS = '.side-toolbar__action.forward, .bili-dyn-action.forward, [class*="side-toolbar__action"][class*="forward"]'
+    FAVORITE_CSS = '.side-toolbar__action.favorite, [class*="side-toolbar__action"][class*="favorite"]'
     SHARE_EDITOR_CSS = '.bili-dyn-share-publishing .bili-rich-textarea__inner[contenteditable="true"]'
     SHARE_PUBLISH_CSS = '.bili-dyn-share-publishing__action, .bili-dyn-share-publishing button'
     DYNAMIC_TEXT_CSS = (
@@ -129,6 +131,10 @@ class DynamicShareBase(object):
             bro.get(lucky_dynamic_url)
             self.wait_page_ready(bro)
             self.share_url = lucky_dynamic_url
+            try:
+                self.original_dynamic_text = self.get_dynamic_text(bro)
+            except Exception:
+                self.original_dynamic_text = ''
             if lottery_kind == 'plain_text':
                 # 普通动态抽奖没有官方 lottery_id，规则已在验证阶段保存。
                 self.lottery_source = 'plain_text'
@@ -161,6 +167,9 @@ class DynamicShareBase(object):
             if 'like' in self.required_actions:
                 self.click_like(bro, chains)
                 random_sleep()
+            if 'favorite' in self.required_actions:
+                self.click_favorite(bro, chains)
+                random_sleep()
             if 'reserve' in self.required_actions:
                 self.click_reserve(bro, chains)
                 random_sleep()
@@ -171,7 +180,10 @@ class DynamicShareBase(object):
                     self.commit_comment(bro, chains, comment_content)
                 random_sleep()
             if 'forward' in self.required_actions:
-                if self.is_already_forwarded(bro):
+                if self.is_already_forwarded(
+                    bro, lucky_dynamic_url,
+                    getattr(self, 'original_dynamic_text', ''),
+                ):
                     mylogger.info("当前账号已转发，跳过转发")
                 else:
                     self.click_share(bro, chains, share_content)
@@ -334,10 +346,13 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         # Keep the primary item for official components even if its body is
         # empty; otherwise opus fallback is still needed to recover plain text.
-        if item is not None and (
-            self._dynamic_item_text(item).strip()
-            or self._has_official_lottery_component(item)
-        ):
+        # A short t.bilibili.com shell (e.g. title-only card) is not a reliable
+        # basis for classifying a giveaway, so try the opus endpoint when the
+        # body is materially shorter than a normal post.
+        primary_text = self._dynamic_item_text(item) if item is not None else ''
+        if item is not None and self._has_official_lottery_component(item):
+            return item
+        if item is not None and len(primary_text.strip()) >= 80:
             return item
 
         # 新接口在限流/部分动态上可能返回 HTML 或 -9999；
@@ -357,8 +372,14 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             reason_prefix='opus_detail',
         )
         if fallback is not None:
-            return self._normalize_dynamic_item(fallback)
-        return None
+            normalized = self._normalize_dynamic_item(fallback)
+            if (
+                self._has_official_lottery_component(normalized)
+                or len(self._dynamic_item_text(normalized).strip())
+                > len(primary_text.strip())
+            ):
+                return normalized
+        return item
 
     @staticmethod
     def _normalize_dynamic_item(item):
@@ -484,78 +505,208 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         if not normalized:
             return result
 
+        # A live giveaway often says "开奖/名单/截止"; those are schedule
+        # words unless the post actually reports that a draw is finished.
+        # "获奖名单" alone can be a future promise ("将在评论区公布
+        # 获奖名单"); only treat it as a finished result when paired with
+        # result context below.
         result_words = (
-            '中奖名单', '获奖名单', '开奖名单', '抽奖结果', '开奖结果',
+            '中奖名单', '开奖名单', '抽奖结果', '开奖结果',
             '恭喜获奖', '获奖公告', '已开奖', '中奖公布',
+            '获奖名单如下', '中奖名单如下',
         )
-        if any(word in normalized for word in result_words):
+        past_result_words = (
+            '已抽奖', '已抽取', '已送出', '已经送出', '已赠送', '已发放',
+            '获奖名单如下', '中奖名单如下', '名单已公布', '结果已公布',
+        )
+        report_context_words = (
+            '恭喜以下', '恭喜这', '恭喜中奖', '名单如下', '结果如下',
+            '开奖结果', '中奖结果', '获奖结果',
+        )
+        has_prize = any(
+            word in normalized for word in (
+                '奖品', '礼盒', '礼包', '周边', '礼品', '红包', '元', '卡', '券',
+                '耳机', '键盘', '鼠标', '手机', '平板', '相机', '机械轴', '手办',
+                '模型', '盲盒', '零食', '年卡', '月卡', '兑换券', '兑换卡',
+                '资格', '门票', '同款', '套装', '礼盒', '抱枕', '挂件', '立牌',
+                '帆布袋', '袋子', '水壶', '吨吨桶', '徽章', '钥匙扣', '毛巾',
+                '手柄', '游戏机', '主机', '外设', '耳机', '键盘', '鼠标',
+                '本书', '一本', '书籍', '图书', '读物', '画册', '小说',
+            )
+        ) or bool(re.search(r'(?:送|赠|揪|抽|赢取|获得)[^\n]{0,40}[\*＊xX×]\s*\d+', normalized))
+        # A collection post often says "给up添加特别关注"; that inline
+        # mention is not a call to perform a social action for this post.
+        action_scope = re.sub(
+            r'(?:给[^\n。！!；;]{0,20})?特别关注', '', normalized
+        )
+        # Normalize spaced shorthand such as "关 + 赞 + 转 + 评".
+        action_scope = re.sub(r'\s*[+＋]\s*', '+', action_scope)
+        # Bilibili creators frequently use emoji shorthand for the four
+        # engagement actions: 🐷 follow, ❤️ like, ⭐️ favorite/collect, 💬 comment.
+        action_scope = action_scope.replace('🐷', '关注').replace('❤️', '点赞').replace('⭐️', '收藏').replace('⭐', '收藏').replace('💬', '评论')
+        has_action = any(
+            word in action_scope for word in (
+                '关注', '转发', '评论', '留言', '点赞', '预约', '五连', '5️⃣连',
+                '三连', '3️⃣连', 'plq', '关转', '关+转', '关&转', '转评',
+                '转赞评', '关评', '顶评', '本条动态', '本动态',
+                '关', '转',
+            )
+        )
+        is_result_notice = (
+            any(word in normalized for word in result_words + past_result_words)
+            or (
+                any(word in normalized for word in report_context_words)
+                and not has_action
+            )
+            or (
+                '开奖' in normalized
+                and any(word in normalized for word in ('名单', '结果'))
+                and not has_action
+                and any(word in normalized for word in ('已公布', '已开奖', '结果如下', '名单如下'))
+            )
+        )
+        if is_result_notice:
             result.update(kind='result_or_notice', reason='result_announcement')
             return result
 
-        context_words = (
+        # Real collection/index posts list many unrelated prizes and UIDs,
+        # usually without a single pair of engagement actions. A real
+        # giveaway that happens to say "关注我" must not be filtered here.
+        collection_words = (
             '抽奖合集', '合集更新', '上期传送门', '本期完', '往期',
-            '关注我', '求关注', '广告', '购买', '商城', '优惠券',
-            '奖品稍后公布', '奖品待公布', '奖品后续公布',
-            '具体奖品另行通知', '奖品另行通知',
-            '参与此次抽奖的人可以获得', '抽奖的人可以获得',
+            '抽奖汇总', '福利汇总', '合集目录', '抽奖目录',
+            '本专栏', '专栏点赞', '特别关注', '置顶抽奖',
         )
-        if any(word in normalized for word in context_words):
+        collection_markers = (
+            '抽奖UP的名字和uid', '抽奖UP的名字和UID', '抽奖up的名字和uid',
+            '链接在评论区', '详情看主页', '抽奖合集',
+        )
+        collection_score = sum(1 for word in collection_words if word in normalized)
+        collection_score += sum(1 for word in collection_markers if word in normalized)
+        if collection_score >= 2 and not has_action:
             result.update(kind='context_or_ad', reason='collection_or_ad')
             return result
 
-        giveaway_words = ('抽', '揪', '送', '赠', '福利', '奖品', '有奖')
-        prize_words = (
-            '元', '礼包', '奖品', '名额', '红包', '礼物', '门票', '周边',
-            '卡', '券', '位', '套餐', '套', '份', '套装', '礼盒', '盲盒',
-            '键盘', '耳机', '鼠标', '手办', '抱枕', '挂件', '立牌', '玩偶',
-        )
-        action_text = normalized.replace('&', '').replace('＋', '').replace('+', '')
-        action_words = ('关注', '转发', '评论', '点赞', '预约', '参与', '@', '关+', '关转', '转')
-        action_aliases = (
-            '转赞评', '关转赞评', '关转评', '转评', '评论抽',
-            '评论区抽', '关注转发评论', '关转评',
-        )
-        # “送出机械臂”这类奖品词可能本身不含“礼包/元/卡”等常见词，抽奖语义已足够。
-        date_words = (
-            '开奖', '截止', '日期', '月', '日', '时间',
-            '下周五', '本周五', '周五', '下周一', '本周一',
-        )
-        has_numeric_date = bool(re.search(r'\d{1,2}[./月-]\d{1,2}', normalized))
-        if not any(word in normalized for word in giveaway_words):
+        # “福利” alone is marketing copy; require a real giveaway verb or
+        # an explicit compact engagement rule plus a draw/date/product cue.
+        giveaway_words = ('抽', '揪', '抓', '抢', '送', '赠', '奖品', '有奖', '开奖', '带走', 'roll')
+        compact_giveaway = any(
+            word in normalized for word in ('关转赞评', '转赞评', '关转评', '关+赞+转+评')
+        ) and bool(re.search(r'(?:\d{1,2}[./月-]\d{1,2}|\d{1,2}月\d{1,2}|\d+位|\d+个|\d+件)', normalized))
+        if not any(word in normalized for word in giveaway_words) and not compact_giveaway:
             return result
-        if not any(word in normalized for word in prize_words):
-            # 真实案例常见“送出机械臂/同款产品”等具体物品名；
-            # 有明确抽奖动作和时间时，不因奖品词表缺失就丢弃。
-            if not (
-                any(alias in action_text for alias in action_aliases)
-                and any(word in normalized for word in date_words)
-            ):
-                result.update(kind='suspected_giveaway', reason='missing_prize')
-                return result
-        if (
-            not any(word in action_text for word in action_words)
-            and not any(alias in action_text for alias in action_aliases)
+        if any(
+            word in normalized for word in (
+                '奖品稍后公布', '奖品待公布', '奖品后续公布',
+                '具体奖品另行通知', '奖品另行通知', '参与此次抽奖的人可以获得',
+                '抽奖的人可以获得',
+            )
         ):
+            result.update(kind='suspected_giveaway', reason='missing_prize')
+            return result
+        # Give a precise review reason: missing prize first when neither
+        # prize nor action exists; otherwise explicit date/prize with no
+        # engagement action is a missing-action case.
+        if not has_prize and not has_action:
+            result.update(kind='suspected_giveaway', reason='missing_prize')
+            return result
+        if not has_action:
             result.update(kind='suspected_giveaway', reason='missing_action')
             return result
-        # A concrete draw date is helpful, but not required for participation.
-        # Bilibili posts frequently omit it or place it in an image; when the
-        # giveaway vocabulary, prize and participation action are all present,
-        # execute the known actions immediately.
+        # Prize nouns vary widely; explicit engagement action + prize/date
+        # evidence is enough to execute. Pure action without prize/date is
+        # still ambiguous and must be reviewed.
+        if not has_prize and not re.search(
+            r'(?:开奖|抽取|截止|日期|\d{1,2}\s*[月./-]\s*\d{1,2}|\d{1,2}\s*[日号])',
+            normalized,
+        ):
+            result.update(kind='suspected_giveaway', reason='missing_prize')
+            return result
 
+        action_text = normalized.replace('&', '').replace('＋', '').replace('+', '')
+        action_words = ('关注', '转发', '评论', '留言', '点赞', '预约', '参与', '@', '关+', '关转', '转')
+        action_aliases = (
+            '转赞评', '关转赞评', '关转评', '转评', '评论抽',
+            '评论区抽', '关注转发评论', '关转评', '五连', '5️⃣连', 'plq',
+        )
+
+        compact_actions = (
+            '关转赞评' in normalized
+            or '转赞评' in normalized
+            or '关转评' in normalized
+            or '关&转&赞&评' in normalized
+            or '关+赞+转+评' in action_scope.replace('＋', '+')
+            or '关+赞' in action_scope.replace('＋', '+')
+            or '转+评' in action_scope.replace('＋', '+')
+        )
         has_forward = (
-            '转发' in normalized
-            or '转发' in action_text
+            compact_actions
+            or '转发' in normalized
+            or '转' in action_text
             or '转赞评' in action_text
             or '转评' in action_text
             or '关转评' in action_text
-            or '关+转' in action_text
+            or '关转评' in normalized
             or '关+转' in normalized
-            or '关&转' in normalized
+            or '关+转' in action_text
+            or '关+赞' in action_text
+            or '转+评' in action_text
+            or '关+赞+转+评' in action_scope.replace('＋', '+')
+            or '关+赞' in action_scope.replace('＋', '+')
+            or '转+评' in action_scope.replace('＋', '+')
+            or '5️⃣连' in normalized
+            or '五连' in normalized
         )
-        has_comment = '评论' in normalized or '留言' in normalized or '评' in action_text
-        has_follow = '关注' in normalized or '关' in action_text
-        has_like = '点赞' in normalized or '赞' in action_text
+        # "评论区" is discussion context, not an action by itself. Require an
+        # explicit comment verb; "plq" is the common Bilibili abbreviation.
+        has_comment = compact_actions or any(
+            word in action_scope for word in (
+                '评论', '留言', 'plq', '评论区留', '评论区抽', '评论抽',
+                '关转评', '转+评', '转评',
+            )
+        )
+        # Conversational words only imply a comment action when the post
+        # explicitly places them in the comment area. They often occur in
+        # unrelated podcast/product copy and must not create a comment.
+        if not has_comment and '评论区' in action_scope:
+            has_comment = any(
+                word in action_scope for word in ('聊聊', '说说', '分享', '祝福')
+            )
+        has_follow = (
+            '关注' in normalized
+            or '关注' in action_scope
+            or '关' in action_text
+            or '关转评' in normalized
+            or '关+转' in normalized
+        )
+        # A bare "赞" in unrelated product copy must not count as engagement.
+        has_like = (
+            '点赞' in normalized
+            or '点赞' in action_scope
+            or '赞' in normalized
+            or '赞' in action_text
+            or '赞' in normalized
+            or '5️⃣连' in normalized
+            or '五连' in normalized
+        )
+        has_favorite = (
+            '⭐️' in normalized
+            or '⭐' in normalized
+            or bool(re.search(
+                r'收藏[^\n]{0,12}(?:本条|本动态|此动态|动态|参与)',
+                normalized,
+            ))
+        )
+        has_three_lian = '三连' in normalized or '3️⃣连' in normalized
+        has_five_lian = '五连' in normalized or '5️⃣连' in normalized
+        if has_three_lian:
+            has_like = True
+            has_comment = True
+            has_forward = True
+        if has_five_lian:
+            has_like = True
+            has_comment = True
+            has_forward = True
         has_reserve = '预约' in normalized
         if has_reserve:
             action = 'reserve'
@@ -574,6 +725,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             required_actions.append('comment')
         if has_like:
             required_actions.append('like')
+        if has_favorite:
+            required_actions.append('favorite')
         if has_forward:
             required_actions.append('forward')
         if has_reserve:
@@ -597,6 +750,14 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             if depth > 8:
                 return False
             if isinstance(value, dict):
+                # The live detail payload often uses
+                # module_dynamic.additional.lottery rather than a TYPE_*
+                # sentinel.  Treat a lottery object with an id as official.
+                additional = value.get('additional')
+                if isinstance(additional, dict):
+                    lottery = additional.get('lottery')
+                    if isinstance(lottery, dict) and lottery.get('lottery_id'):
+                        return True
                 for key, child in value.items():
                     if isinstance(key, str) and key.lower() in (
                         'rich_text_node_type_lottery',
@@ -647,12 +808,11 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         rid = reserve.get('rid')
         if rid:
             return str(rid)
-        try:
-            serialized = str(item)
-        except Exception:
-            return None
-        match = cls.RESERVE_RID_PATTERN.search(serialized)
-        return match.group(1) if match else None
+        # Do not fall back to a regex over the whole JSON blob: detail pages
+        # commonly contain unrelated `rid` fields (cards/attachments), which
+        # previously forced ordinary text giveaways into the official
+        # notice endpoint and produced spurious -9999 responses.
+        return None
 
     @staticmethod
     def _notice_endpoint(business_id, business_type):
@@ -670,6 +830,112 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         current = now or datetime.now(SHANGHAI_TZ)
         if current.tzinfo is None:
             current = current.replace(tzinfo=SHANGHAI_TZ)
+        weekday_map = {
+            '一': 0, '二': 1, '三': 2, '四': 3,
+            '五': 4, '六': 5, '日': 6, '天': 6,
+        }
+        relative_weekday = re.search(
+            r'(下|本|这)?\s*周\s*([一二三四五六日天])', normalized
+        )
+        if relative_weekday:
+            prefix = relative_weekday.group(1) or ''
+            target = weekday_map[relative_weekday.group(2)]
+            base_date = current.date()
+            week_start = base_date - timedelta(days=base_date.weekday())
+            if prefix == '下':
+                week_start += timedelta(days=7)
+            target_date = week_start + timedelta(days=target)
+            if target_date < base_date:
+                target_date += timedelta(days=7)
+            deadline = datetime.combine(
+                target_date, datetime_time(23, 59), tzinfo=SHANGHAI_TZ
+            )
+            return str(deadline.replace(tzinfo=None))
+        relative_month = re.search(
+            r'(?:一|1|两|2|二|三|四|五|六|七|八|九|十|十一|十二)\s*个?\s*月后',
+            normalized,
+        )
+        if relative_month:
+            chunk = relative_month.group(0)
+            number_match = re.search(r'\d+', chunk)
+            if number_match:
+                months = int(number_match.group(0))
+            else:
+                cn_map = {
+                    '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5,
+                    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                    '十一': 11, '十二': 12,
+                }
+                months = 1
+                for cn in sorted(cn_map, key=len, reverse=True):
+                    if cn in chunk:
+                        months = cn_map[cn]
+                        break
+            month_index = current.month - 1 + months
+            year = current.year + month_index // 12
+            month = month_index % 12 + 1
+            day = min(current.day, calendar.monthrange(year, month)[1])
+            deadline = current.replace(
+                year=year, month=month, day=day,
+                hour=23, minute=59, second=0, microsecond=0,
+            )
+            return str(deadline.replace(tzinfo=None))
+
+        month_only = re.search(
+            r'(\d{1,2})\s*月\s*(?:影驰日|活动|抽奖|福利日|粉丝日)',
+            normalized,
+        )
+        if month_only:
+            month = int(month_only.group(1))
+            year = current.year
+            if month < current.month:
+                year += 1
+            last_day = calendar.monthrange(year, month)[1]
+            deadline = datetime(
+                year, month, last_day, 23, 59, tzinfo=SHANGHAI_TZ
+            )
+            return str(deadline.replace(tzinfo=None))
+
+        # Activity ranges must use the END date, not the first date. Without
+        # this, "10月2日-11月16日" was read as 10/2 and falsely expired.
+        range_match = re.search(
+            r'(?:活动时间|活动日期|活动期间|参与时间)\s*[:：]?\s*'
+            r'(?:20\d{2}年)?\d{1,2}\s*月\s*\d{1,2}\s*[日号]?'
+            r'\s*(?:-|~|～|至|到)\s*'
+            r'((?:20\d{2})年)?\s*(?P<month>\d{1,2})\s*月\s*'
+            r'(?P<day>\d{1,2})\s*[日号]?'
+            r'(?P<tail>[^\n]{0,20})',
+            normalized,
+        )
+        if range_match:
+            year = (
+                int(range_match.group(1)[:-1])
+                if range_match.group(1) else current.year
+            )
+            month = int(range_match.group('month'))
+            day = int(range_match.group('day'))
+            tail = range_match.group('tail') or ''
+            time_match = re.search(
+                r'(上午|下午|晚上|凌晨|中午)?\s*(\d{1,2})[:点](\d{2})?',
+                tail,
+            )
+            hour = 23
+            minute = 59
+            if time_match:
+                hour = int(time_match.group(2))
+                minute = int(time_match.group(3) or 0)
+                period = time_match.group(1) or ''
+                if ('下午' in period or '晚上' in period) and hour < 12:
+                    hour += 12
+            try:
+                deadline = datetime(
+                    year, month, day, hour, minute, tzinfo=SHANGHAI_TZ
+                )
+                if deadline < current - timedelta(days=30):
+                    deadline = deadline.replace(year=year + 1)
+                return str(deadline.replace(tzinfo=None))
+            except (TypeError, ValueError, OverflowError):
+                pass
         # Prefer a date near the opening / draw wording, and require a time or
         # an explicit "开奖" marker so unrelated dates are not used.
         patterns = (
@@ -693,6 +959,31 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 except (TypeError, ValueError, OverflowError):
                     continue
         return None
+
+    @staticmethod
+    def _publish_time_from_item(item):
+        if not isinstance(item, dict):
+            return None
+        modules = item.get('modules') or {}
+        module_author = {}
+        if isinstance(modules, dict):
+            module_author = modules.get('module_author') or {}
+        elif isinstance(modules, list):
+            for module in modules:
+                if isinstance(module, dict) and module.get('module_author'):
+                    module_author = module.get('module_author') or {}
+                    break
+        raw = module_author.get('pub_ts') or module_author.get('pub_time')
+        try:
+            ts = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if ts > 10_000_000_000:
+            ts //= 1000
+        try:
+            return datetime.fromtimestamp(ts, SHANGHAI_TZ)
+        except (OSError, OverflowError, ValueError):
+            return None
 
     def fetch_official_lottery_notice(self, bro, lucky_dynamic_url, retries=3):
         """返回结构化官方抽奖校验结果，不执行任何社交动作。"""
@@ -725,8 +1016,21 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         if isinstance(item, dict) and not has_official_component:
             if classification.get('confirmed'):
                 self.lottery_source = 'plain_text'
-                plain_text_deadline = self._parse_plain_text_deadline(
-                    classification.get('text') or ''
+                text_deadline = self._parse_plain_text_deadline(
+                    classification.get('text') or '',
+                    now=self._publish_time_from_item(item),
+                )
+                # Official lottery metadata can be present even when the
+                # button node is not exposed. It is authoritative for expiry.
+                try:
+                    metadata = self.get_dynamic_time_metadata(bro)
+                except Exception:
+                    metadata = {}
+                official_end_ts = metadata.get('lottery_end_ts')
+                plain_text_deadline = (
+                    self._notice_datetime(official_end_ts)
+                    if official_end_ts
+                    else text_deadline
                 )
                 return {
                     'confirmed': True,
@@ -798,6 +1102,18 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                                 result.get('lottery_time')
                             ),
                             'status': result.get('status'),
+                            # Keep the text-derived action rule even when the
+                            # official component supplies the lottery id.
+                            'source': (
+                                'official+text'
+                                if classification.get('confirmed')
+                                else 'official_notice'
+                            ),
+                            'lottery_rule': (
+                                classification
+                                if classification.get('confirmed')
+                                else None
+                            ),
                         }
                     if code == 0:
                         # code=0 但没有 lottery_id 不足以证明“不是抽奖”；
@@ -1172,7 +1488,7 @@ Promise.all([
     def parse_expire_date(self, text, publish_time=None):
         primary_keyword_pattern = (
             r'(开奖|开獎|抽奖结果|抽獎結果|中奖名单|中獎名單|公布名单|公布名單|'
-            r'公布结果|公布結果)'
+            r'公布结果|公布結果|抽送|抽奖|抽獎)'
         )
         secondary_keyword_pattern = (
             r'(截止|截至|报名截止|報名截止|参与截止|參與截止|'
@@ -1183,6 +1499,151 @@ Promise.all([
         secondary_candidates = []
         all_dates = []
         current_year = publish_time.year if publish_time is not None else date.today().year
+        base_date = (
+            publish_time.date()
+            if isinstance(publish_time, datetime)
+            else (publish_time if isinstance(publish_time, date) else date.today())
+        )
+        weekday_map = {
+            '一': 0, '二': 1, '三': 2, '四': 3,
+            '五': 4, '六': 5, '日': 6, '天': 6,
+        }
+        relative_weekday = re.search(
+            r'(下|本|这)?\s*周\s*([一二三四五六日天])', text
+        )
+        if relative_weekday:
+            prefix = relative_weekday.group(1) or ''
+            target = weekday_map[relative_weekday.group(2)]
+            # Monday=0. "本周" means the current calendar week's target;
+            # "下周" means the next calendar week's target.
+            week_start = base_date - timedelta(days=base_date.weekday())
+            if prefix == '下':
+                week_start += timedelta(days=7)
+            target_date = week_start + timedelta(days=target)
+            if target_date < base_date:
+                target_date += timedelta(days=7)
+            hour = 23
+            minute = 59
+            time_match = re.search(
+                r'(上午|下午|晚上|凌晨|中午)?\s*(\d{1,2})\s*[:点]\s*(\d{2})?',
+                text[
+                    relative_weekday.end():
+                    relative_weekday.end() + 30
+                ],
+            )
+            if time_match:
+                hour = int(time_match.group(2))
+                minute = int(time_match.group(3) or 0)
+                period = time_match.group(1) or ''
+                if ('下午' in period or '晚上' in period) and hour < 12:
+                    hour += 12
+            return datetime.combine(target_date, datetime_time(hour, minute))
+
+        relative_duration = re.search(
+            r'(?:一|1|两|2|三|3|四|4|五|5|六|6|七|7|八|8|九|9|十|10|十一|11|十二|12)\s*个?\s*月后',
+            text,
+        )
+        if relative_duration:
+            chunk = relative_duration.group(0)
+            number_match = re.search(r'\d+', chunk)
+            if number_match:
+                months = int(number_match.group(0))
+            else:
+                cn_map = {
+                    '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5,
+                    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                    '十一': 11, '十二': 12,
+                }
+                months = 1
+                for cn in sorted(cn_map, key=len, reverse=True):
+                    if cn in chunk:
+                        months = cn_map[cn]
+                        break
+            base = publish_time or datetime.now(SHANGHAI_TZ)
+            if isinstance(base, date) and not isinstance(base, datetime):
+                base = datetime.combine(base, datetime_time.min)
+            month_index = base.month - 1 + months
+            year = base.year + month_index // 12
+            month = month_index % 12 + 1
+            day = min(base.day, calendar.monthrange(year, month)[1])
+            deadline = base.replace(
+                year=year, month=month, day=day,
+                hour=23, minute=59, second=0, microsecond=0,
+            )
+            return deadline
+
+        relative_days = re.search(
+            r'(?:一|1|两|2|三|3|四|4|五|5|六|6|七|7|八|8|九|9|十|10)\s*(?:天|日)后',
+            text,
+        )
+        relative_weeks = re.search(
+            r'(?:一|1|两|2|三|3|四|4|五|5|六|6|七|7|八|8|九|9|十|10)\s*(?:周|星期)后',
+            text,
+        )
+        if relative_days or relative_weeks:
+            match = relative_days or relative_weeks
+            chunk = match.group(0)
+            number_match = re.search(r'\d+', chunk)
+            if number_match:
+                amount = int(number_match.group(0))
+            else:
+                cn_map = {
+                    '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5,
+                    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                }
+                amount = 1
+                for cn in sorted(cn_map, key=len, reverse=True):
+                    if cn in chunk:
+                        amount = cn_map[cn]
+                        break
+            if relative_weeks:
+                amount *= 7
+            base = publish_time or datetime.now(SHANGHAI_TZ)
+            if isinstance(base, date) and not isinstance(base, datetime):
+                base = datetime.combine(base, datetime_time.min)
+            deadline = base + timedelta(days=amount)
+            return deadline.replace(
+                hour=23, minute=59, second=0, microsecond=0
+            )
+
+        month_only = re.search(
+            r'(\d{1,2})\s*月\s*(?:影驰日|活动|抽奖|福利日|粉丝日)',
+            text,
+        )
+        if month_only:
+            month = int(month_only.group(1))
+            year = current_year
+            if publish_time is not None and month < publish_time.month:
+                year += 1
+            last_day = calendar.monthrange(year, month)[1]
+            return datetime(
+                year, month, last_day, 23, 59, tzinfo=SHANGHAI_TZ
+            )
+
+        # Activity ranges such as "活动时间：10月2日-11月16日" state their
+        # real participation deadline as the end date. The generic keyword
+        # matcher intentionally ignores dates without 开奖/截止, so handle
+        # this explicit range form before it.
+        range_match = re.search(
+            r'(?:活动时间|活动日期|活动期间|参与时间)\s*[:：]?\s*'
+            r'(?:20\d{2}年)?\d{1,2}\s*月\s*\d{1,2}\s*[日号]?'
+            r'\s*(?:-|~|～|至|到)\s*'
+            r'((?:20\d{2})年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?',
+            text,
+        )
+        if range_match:
+            year = (
+                int(range_match.group(1)[:-1])
+                if range_match.group(1) else current_year
+            )
+            end = self.parse_date_time_nearby(
+                text, range_match.start(2), range_match.end(),
+                year, int(range_match.group(2)), int(range_match.group(3)),
+            )
+            if end is not None and (
+                publish_time is None or end > publish_time
+            ):
+                return end
         date_pattern = r'((?:20\d{2})年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?'
         for match in re.finditer(date_pattern, text):
             year = int(match.group(1)[:-1]) if match.group(1) else current_year
@@ -1291,15 +1752,11 @@ Promise.all([
             )
             if secondary_candidates:
                 return max(secondary_candidates)
-        giveaway_matches = list(re.finditer(
-            giveaway_keyword_pattern, text, re.IGNORECASE
-        ))
-        if giveaway_matches and all_dates:
-            return max(all_dates)
-        # 没有任何开奖语义时，普通日期可能是活动开始、发货或其他时间，
-        # 不能直接当作开奖时间；有开奖语义但日期不在关键词附近时，才允许全局兜底。
-        if keyword_matches and all_dates:
-            return max(all_dates)
+        # Never use every date on the page as a deadline. The rendered page
+        # contains the publication timestamp (often later in the day than
+        # pub_ts), and treating it as a draw deadline made no-date giveaways
+        # expire immediately. A date is only a deadline when it is adjacent
+        # to explicit draw/deadline wording.
         return None
 
     @staticmethod
@@ -1398,7 +1855,7 @@ if (comments) comments.scrollIntoView({block: 'center'});
             body = body[comment_marker.start():]
         return any(line.strip() == user_name for line in body.splitlines())
 
-    def is_already_forwarded(self, bro):
+    def is_already_forwarded(self, bro, current_url=None, original_text=''):
         buttons = self.get_visible_elements(bro, self.FORWARD_CSS)
         for button in buttons:
             text = (button.get_attribute('innerText') or button.text or '').strip()
@@ -1411,6 +1868,56 @@ if (comments) comments.scrollIntoView({block: 'center'});
                 or aria_pressed == "true"
             ):
                 return True
+        # The opus DOM does not expose a stable "forwarded" class on the
+        # toolbar. Check the user's own dynamic feed as a second signal.
+        if not current_url:
+            return False
+        match = re.search(r'/(\d+)(?:\?|$)', str(current_url))
+        if not match:
+            return False
+        dynamic_id = match.group(1)
+        original_url = current_url
+        try:
+            space_url = 'https://space.bilibili.com/%s/dynamic' % self.user_id
+            bro.get(space_url)
+            WebDriverWait(bro, 15).until(
+                lambda driver: driver.execute_script('return document.readyState')
+                in ('interactive', 'complete')
+            )
+            try:
+                WebDriverWait(bro, 15).until(
+                    lambda driver: len(
+                        driver.find_elements(By.CSS_SELECTOR, '.bili-dyn-item')
+                    ) > 0
+                )
+            except TimeoutException:
+                bro.get(original_url)
+                return False
+            cards = self.get_visible_elements(bro, '.bili-dyn-item')
+            for card in cards:
+                html = card.get_attribute('outerHTML') or ''
+                text = (card.get_attribute('innerText') or card.text or '')
+                if dynamic_id in html or dynamic_id in text:
+                    bro.get(original_url)
+                    return True
+                fingerprint = re.sub(r'\s+', '', str(original_text or ''))[:40]
+                normalized_card = re.sub(r'\s+', '', str(text or ''))
+                if fingerprint and fingerprint in normalized_card:
+                    bro.get(original_url)
+                    return True
+                links = card.find_elements(By.TAG_NAME, 'a')
+                for link in links:
+                    href = link.get_attribute('href') or ''
+                    if dynamic_id in href:
+                        bro.get(original_url)
+                        return True
+        except Exception:
+            try:
+                bro.get(original_url)
+            except Exception:
+                pass
+            return False
+        bro.get(original_url)
         return False
 
     def click_follow_all(self, bro, chains):
@@ -1546,6 +2053,24 @@ fetch('https://api.bilibili.com/x/relation?fid=' + encodeURIComponent(fid), {cre
             self.click_by_js(bro, like_btn)
         except Exception as e:
             mylogger.error("[click_like 点击“点赞” 出错 %s]" % e, exc_info=True)
+            raise
+
+    def click_favorite(self, bro, chains):
+        """Collect/favorite the current dynamic when the rule asks for it."""
+        try:
+            button = self.wait_clickable_css(bro, self.FAVORITE_CSS)
+            cls = (button.get_attribute('class') or '').lower()
+            if 'active' in cls or 'favorited' in cls:
+                mylogger.info('当前动态已收藏，跳过收藏')
+                return
+            self.click_by_js(bro, button)
+            random_sleep(start=1, end=2)
+            button = self.wait_clickable_css(bro, self.FAVORITE_CSS)
+            cls = (button.get_attribute('class') or '').lower()
+            if 'active' not in cls and 'favorited' not in cls:
+                mylogger.warning('收藏状态无法确认，继续后续动作')
+        except Exception:
+            mylogger.error('[click_favorite 点击收藏出错]', exc_info=True)
             raise
 
     def click_reserve(self, bro, chains):

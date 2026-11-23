@@ -87,18 +87,29 @@ class LoginService(object):
                             'SESSDATA 已过期，请更新登录会话。'
                         )
                     continue
-                try:
-                    self.bro.add_cookie(cookie)
-                except InvalidCookieDomainException:
-                    # Navigation can still be settling on an intermediate
-                    # origin; re-enter the Bilibili page before injecting.
-                    self.bro.get(globals.home_url)
-                    WebDriverWait(self.bro, 10).until(
-                        lambda driver: self._is_bilibili_host(
-                            urlparse(driver.current_url).hostname
+                last_error = None
+                for attempt in range(3):
+                    try:
+                        self.bro.add_cookie(cookie)
+                        last_error = None
+                        break
+                    except InvalidCookieDomainException as exc:
+                        last_error = exc
+                        # Proxy navigation can settle more slowly than direct
+                        # navigation. Re-enter Bilibili and confirm both the
+                        # host and a rendered body before trying again.
+                        self.bro.get(globals.home_url)
+                        WebDriverWait(self.bro, 15).until(
+                            lambda driver: self._is_bilibili_host(
+                                urlparse(driver.current_url).hostname
+                            )
                         )
-                    )
-                    self.bro.add_cookie(cookie)
+                        WebDriverWait(self.bro, 15).until(
+                            lambda driver: driver.find_elements(By.TAG_NAME, 'body')
+                        )
+                        time.sleep(1 + attempt)
+                if last_error is not None:
+                    raise last_error
             self.bro.refresh()
             ensure_page_access(self.bro, globals.home_url)
 

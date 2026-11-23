@@ -45,6 +45,11 @@ class FakeBrowser:
             return FakeBody('')
         raise AssertionError('unexpected element lookup')
 
+    def find_elements(self, by, value):
+        if by == By.TAG_NAME and value == 'body':
+            return [self.find_element(by, value)]
+        return []
+
 
 class LoginServiceTests(unittest.TestCase):
     def setUp(self):

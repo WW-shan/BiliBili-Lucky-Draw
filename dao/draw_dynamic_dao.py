@@ -80,6 +80,25 @@ class DrawDynamicDao(object):
         except Exception as e:
             return False
 
+    def reset_excluded_to_pending(self, url):
+        """Re-open one explicitly audited excluded row as pending."""
+        try:
+            self.db.con.ping(reconnect=True)
+            self.db.cur.execute(
+                "UPDATE " + self.table_name
+                + " SET status = '0' WHERE status = '4' AND dyn_url = %s",
+                (str(url),),
+            )
+            rows = self.db.cur.rowcount
+            self.db.con.commit()
+            return rows
+        except Exception:
+            try:
+                self.db.con.rollback()
+            except Exception:
+                pass
+            raise
+
     def update_sharedUrl(self, url, status):
         try:
             params = {'status': str(status)}

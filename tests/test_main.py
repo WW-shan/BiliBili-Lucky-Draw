@@ -96,6 +96,18 @@ class MainWorkflowTests(unittest.TestCase):
         self.assertEqual(iteration.call_count, 3)
         self.assertEqual(clock.sleep.call_count, 1)
 
+    def test_transient_selenium_session_failure_does_not_pause_worker(self):
+        with patch.object(main, '_workflow_paused', False), patch.object(
+            main,
+            'run_pipeline_iteration',
+            side_effect=RuntimeError('Could not start a new session. New session request timed out'),
+        ) as cycle:
+            main.run_safely()
+            main.run_safely()
+
+        self.assertFalse(main._workflow_paused)
+        self.assertEqual(cycle.call_count, 2)
+
     def test_verification_block_pauses_future_automatic_cycles(self):
         with patch.object(main, '_workflow_paused', False):
             with patch.object(

@@ -104,6 +104,10 @@ def _run_safely(job):
         )
     except Exception as exc:
         mylogger.error('自动任务执行失败：%s', exc, exc_info=True)
+        # A transient Selenium session exhaustion must not permanently stop the
+        # continuous queue. Let the next short poll retry.
+        if 'Could not start a new session' in str(exc) or 'SessionNotCreated' in type(exc).__name__:
+            return False
     return False
 
 

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
 from service.lottery_service.verify_lottery_service import VerifyLotteryService, SHANGHAI_TZ
+from utils import globals
 
 
 class VerifyLotteryServiceTests(unittest.TestCase):
@@ -105,7 +106,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         ) as login_service:
             service.verify_pending(limit=1)
 
-        webdriver.assert_called_once_with()
+        webdriver.assert_called_once_with(proxy_url=globals.verification_proxy_url or None)
         login_service.assert_called_once_with(browser, chains, '35549700')
         login.login_by_cookie.assert_called_once_with()
         service.checker.fetch_official_lottery_notice.assert_called_once_with(

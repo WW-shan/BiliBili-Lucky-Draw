@@ -7,6 +7,16 @@ from utils.webdriver_util import ElementUtil, cleanup_stale_selenium_sessions, f
 
 class WebDriverOptionsTests(unittest.TestCase):
     @patch('utils.webdriver_util.webdriver.Remote')
+    def test_online_driver_can_use_verification_proxy_only(self, remote):
+        remote.return_value = Mock()
+
+        with patch.object(globals, 'verification_proxy_url', 'http://host.docker.internal:7897'):
+            online_driver(proxy_url=globals.verification_proxy_url)
+
+        options = remote.call_args.kwargs['options']
+        self.assertIn('--proxy-server=http://host.docker.internal:7897', options.arguments)
+
+    @patch('utils.webdriver_util.webdriver.Remote')
     def test_online_driver_uses_nonblocking_navigation_strategy(self, remote):
         remote.return_value = Mock()
 

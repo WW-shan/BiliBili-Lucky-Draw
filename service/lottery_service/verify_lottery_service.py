@@ -65,7 +65,9 @@ class VerifyLotteryService(object):
 
     def _ensure_browser(self):
         if self.owns_browser and self.bro is None:
-            self.bro, self.chains = init_webdriver()
+            self.bro, self.chains = init_webdriver(
+                proxy_url=globals.verification_proxy_url or None
+            )
             LoginService(self.bro, self.chains, self.user_id).login_by_cookie()
             self.bro.get('https://www.bilibili.com/')
 

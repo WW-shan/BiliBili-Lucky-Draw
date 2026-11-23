@@ -46,6 +46,15 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  verification-proxy:
+    image: metacubex/mihomo:latest
+    container_name: bili-verification-proxy
+    network_mode: host
+    volumes:
+      - ./.runtime_proxy:/audit:ro
+    command: ["-d", "/audit", "-f", "/audit/verification.yaml"]
+    restart: unless-stopped
+
   dynamic_share:
     mem_limit: 256m
     memswap_limit: 512m
@@ -70,6 +79,7 @@ services:
       IDLE_POLL_SECONDS: ${IDLE_POLL_SECONDS:-30}
       DETAIL_REQUEST_MIN_SECONDS: ${DETAIL_REQUEST_MIN_SECONDS:-3}
       DETAIL_REQUEST_MAX_SECONDS: ${DETAIL_REQUEST_MAX_SECONDS:-6}
+      VERIFICATION_PROXY_URL: ${VERIFICATION_PROXY_URL:-http://172.21.0.1:7897}
     volumes:
       - ./Log:/app/Log
     depends_on:
@@ -77,4 +87,6 @@ services:
         condition: service_healthy
       bili-selenium:
         condition: service_healthy
+      verification-proxy:
+        condition: service_started
     restart: unless-stopped

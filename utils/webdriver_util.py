@@ -66,7 +66,7 @@ def local_driver():
     return bro, chains
 
 
-def online_driver():
+def online_driver(proxy_url=None):
     """
         初始化Selenium信息———— 此版本用于生成Cookie，所以浏览器去掉无头模式
         :return:
@@ -84,6 +84,8 @@ def online_driver():
     chrome_options.add_argument("--disable-extensions")  # 禁用插件加载
     chrome_options.add_argument('lang=zh_CN.UTF-8')
     chrome_options.add_argument('--window-size=1280,900')
+    if proxy_url:
+        chrome_options.add_argument('--proxy-server=' + str(proxy_url))
     chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
     driver = webdriver.Remote(
         command_executor=globals.selenium_url,

@@ -72,6 +72,43 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         browser.get.assert_called_once_with('https://www.bilibili.com/')
 
+    def test_temporary_detail_timeout_retries_with_same_id_opus_origin_once(self):
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/'
+        browser.execute_async_script.side_effect = [
+            {'timeout': True},
+            {'code': 0, 'data': {'item': {'modules': {'module_dynamic': {
+                'type': 'ADDITIONAL_TYPE_LOTTERY'
+            }}}}},
+        ]
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+
+        result = share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/1270912279290839112'
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(browser.execute_async_script.call_count, 2)
+        self.assertIn('opus/detail', browser.execute_async_script.call_args_list[-1].args[1])
+
+    def test_html_detail_response_is_classified_as_risk_control(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'error': "SyntaxError: Unexpected token '<', '<!DOCTYPE '... is not valid JSON"
+        }
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+
+        result = share._fetch_dynamic_detail_item(
+            browser, 'https://www.bilibili.com/opus/1270912279290839112'
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(share.last_api_reason, 'html_risk_control')
+
     def test_detail_fetch_wait_is_configurable_and_paced(self):
         browser = Mock()
         browser.execute_async_script.return_value = {
@@ -350,6 +387,51 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertEqual(result['action'], 'forward')
         self.assertEqual(result['required_actions'], ['follow', 'comment', 'forward'])
 
+    def test_non_giveaway_social_text_does_not_call_official_notice(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'data': {'item': {'modules': {'module_dynamic': {
+                'desc': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '比赛真看爽了吧'},
+                ]},
+                'major': {'type': 'MAJOR_TYPE_OPUS'},
+            }}}},
+        }
+        share = DynamicShareBase()
+        share.detail_request_min_seconds = 0
+        share.detail_request_max_seconds = 0
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=1
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertFalse(result['retryable'])
+        self.assertEqual(browser.execute_async_script.call_count, 1)
+
+    def test_ambiguous_prize_wording_is_not_auto_confirmed(self):
+        item = {'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '参与此次抽奖的人可以获得一张无偿呀'},
+            ]},
+            'major': {'type': 'MAJOR_TYPE_OPUS'},
+        }}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertIn(result['kind'], ('suspected_giveaway', 'context_or_ad'))
+
+    def test_giveaway_without_action_is_reviewed_not_auto_confirmed(self):
+        item = {'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '给大伙送点夜宵吧，50份螺丝粉大套装'},
+            ]},
+            'major': {'type': 'MAJOR_TYPE_OPUS'},
+        }}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'missing_action')
+
     def test_negative_giveaway_examples_are_rejected(self):
         samples = (
             '抽奖结果公布，恭喜以下3位中奖粉丝，开奖时间11月20日。',
@@ -364,6 +446,30 @@ class ShareOneDynamicTests(unittest.TestCase):
                 ]}}}}
                 result = DynamicShareBase.classify_lottery_item(item)
                 self.assertFalse(result['confirmed'])
+
+    def test_product_giveaway_with_nonstandard_short_action_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '点👈，关+转就可以了\n送的是主播准备用来收藏的海斗大赛zynooQ65键盘'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'forward'])
+
+    def test_giveaway_that_only_requires_replying_in_comments_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '毛到两个雷蛇虎抱枕，挺可爱的，抽给两位同学，评论区留言即可。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['comment'])
+
+    def test_giveaway_without_explicit_action_is_not_auto_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '毛到两个雷蛇虎抱枕，挺可爱的，抽给两位同学'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'missing_action')
 
     def test_ambiguous_giveaway_examples_are_not_auto_confirmed(self):
         samples = (

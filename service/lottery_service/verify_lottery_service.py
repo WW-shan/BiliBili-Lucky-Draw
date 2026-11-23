@@ -1,3 +1,4 @@
+import re
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -19,7 +20,14 @@ SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
 
 class VerifyLotteryService(object):
     RETRY_BACKOFF_MINUTES = 15
-    UNKNOWN_CIRCUIT_BREAKER = 1
+    # A transient timeout must not end the whole batch.  Circuit-break only
+    # when the remote endpoint is visibly blocking us.
+    UNKNOWN_CIRCUIT_BREAKER = 3
+    RISK_CONTROL_REASONS = frozenset({
+        'html_risk_control', 'api_code:-352', 'api_code:-412',
+        'api_code:-509', 'api_code:412', 'request_error',
+        'opus_detail_invalid_response',
+    })
 
     @staticmethod
     def _is_expired(lottery_end_time):
@@ -62,6 +70,7 @@ class VerifyLotteryService(object):
             self.bro.get('https://www.bilibili.com/')
 
     def verify_pending(self, limit=None):
+        batch_started = time.monotonic()
         limit = max(1, int(limit or globals.verify_batch_limit))
         candidates = self.draw_dao.query_by_verification_priority(
             limit=min(max(limit * 4, limit), 200)
@@ -77,15 +86,23 @@ class VerifyLotteryService(object):
             'cooldown_started': 0,
         }
         eligible = []
+        seen_dynamic_ids = set()
         for candidate in candidates:
             url = candidate.get('dyn_url')
             if not url:
+                continue
+            dynamic_match = re.search(r'/(\d+)(?:\?|$)', str(url))
+            dynamic_id = dynamic_match.group(1) if dynamic_match else url
+            if dynamic_id in seen_dynamic_ids:
+                # t.bilibili.com/<id> and www.bilibili.com/opus/<id> are the
+                # same object; verify it once and sync both rows together.
                 continue
             if self.scan_cache_dao.has_recent_failure(
                 'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
             ):
                 stats['skipped_recent'] += 1
                 continue
+            seen_dynamic_ids.add(dynamic_id)
             if str(candidate.get('status')) == '3':
                 stats['reverified_after_failure'] += 1
             eligible.append(candidate)
@@ -145,12 +162,18 @@ class VerifyLotteryService(object):
                         result.get('reason') or 'unknown',
                     )
                     consecutive_unknown += 1
-                    # 详情或开奖接口一旦出现系统性异常，继续请求只会加重限流。
-                    # 立即结束本批，缓存中的失败时间会驱动下一轮冷却。
+                    reason = str(result.get('reason') or '')
+                    if reason in self.RISK_CONTROL_REASONS:
+                        stats['cooldown_started'] = 1
+                        mylogger.warning(
+                            '检测到B站风控（%s），提前结束本轮验证并保留待重试',
+                            reason,
+                        )
+                        break
                     if consecutive_unknown >= self.UNKNOWN_CIRCUIT_BREAKER:
                         stats['cooldown_started'] = 1
                         mylogger.warning(
-                            '抽奖接口连续 %s 条无法确认，提前结束本轮验证并保留待重试',
+                            '连续 %s 条临时接口异常，提前结束本轮验证并保留待重试',
                             consecutive_unknown,
                         )
                         break
@@ -162,5 +185,6 @@ class VerifyLotteryService(object):
                     self.bro.quit()
                 except Exception:
                     mylogger.warning('关闭抽奖验证浏览器失败', exc_info=True)
+        stats['elapsed_seconds'] = round(time.monotonic() - batch_started, 2)
         mylogger.info('抽奖资格验证完成：%s', stats)
         return stats

@@ -289,7 +289,11 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             self.last_api_reason = '%s_timeout' % reason_prefix
             return None
         if result.get('error'):
-            self.last_api_reason = '%s_invalid_response' % reason_prefix
+            error_text = str(result.get('error') or '').lower()
+            if '<' in error_text and ('doctype' in error_text or 'json' in error_text):
+                self.last_api_reason = 'html_risk_control'
+            else:
+                self.last_api_reason = '%s_invalid_response' % reason_prefix
             return None
         code = result.get('code')
         if code not in (None, 0):
@@ -493,15 +497,20 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             '关注我', '求关注', '广告', '购买', '商城', '优惠券',
             '奖品稍后公布', '奖品待公布', '奖品后续公布',
             '具体奖品另行通知', '奖品另行通知',
+            '参与此次抽奖的人可以获得', '抽奖的人可以获得',
         )
         if any(word in normalized for word in context_words):
             result.update(kind='context_or_ad', reason='collection_or_ad')
             return result
 
         giveaway_words = ('抽', '揪', '送', '赠', '福利', '奖品', '有奖')
-        prize_words = ('元', '礼包', '奖品', '名额', '红包', '礼物', '门票', '周边', '卡', '券', '位')
+        prize_words = (
+            '元', '礼包', '奖品', '名额', '红包', '礼物', '门票', '周边',
+            '卡', '券', '位', '套餐', '套', '份', '套装', '礼盒', '盲盒',
+            '键盘', '耳机', '鼠标', '手办', '抱枕', '挂件', '立牌', '玩偶',
+        )
         action_text = normalized.replace('&', '').replace('＋', '').replace('+', '')
-        action_words = ('关注', '转发', '评论', '点赞', '预约', '参与', '@')
+        action_words = ('关注', '转发', '评论', '点赞', '预约', '参与', '@', '关+', '关转', '转')
         action_aliases = (
             '转赞评', '关转赞评', '关转评', '转评', '评论抽',
             '评论区抽', '关注转发评论', '关转评',
@@ -536,9 +545,12 @@ fetch(target, {credentials: 'include', signal: controller.signal})
 
         has_forward = (
             '转发' in normalized
+            or '转发' in action_text
             or '转赞评' in action_text
             or '转评' in action_text
             or '关转评' in action_text
+            or '关+转' in action_text
+            or '关+转' in normalized
             or '关&转' in normalized
         )
         has_comment = '评论' in normalized or '留言' in normalized or '评' in action_text
@@ -734,6 +746,16 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     'confirmed': False,
                     'retryable': True,
                     'reason': classification.get('reason') or 'ambiguous_giveaway',
+                }
+            if classification.get('kind') == 'not_lottery' and classification.get('text'):
+                # The detail body is available and contains no giveaway
+                # vocabulary at all. Do not send every ordinary post to the
+                # official notice endpoint; that is what generated most
+                # spurious -9999 errors.
+                return {
+                    'confirmed': False,
+                    'retryable': False,
+                    'reason': 'not_lottery',
                 }
             # 详情里没有官方组件时，不能仅凭关键词判断不是抽奖；
             # 仍保留一次接口查询，避免把普通互动抽奖或接口隐藏组件漏掉。

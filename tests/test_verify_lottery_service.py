@@ -301,7 +301,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.draw_dao.update_sharedUrl.assert_not_called()
         service.ready_dao.upsert.assert_not_called()
 
-    def test_first_retryable_api_failure_ends_batch_immediately(self):
+    def test_first_risk_control_response_ends_batch_immediately(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [
             {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
@@ -310,7 +310,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.checker.fetch_official_lottery_notice.return_value = {
             'confirmed': False,
             'retryable': True,
-            'reason': 'api_code:-9999',
+            'reason': 'html_risk_control',
         }
 
         stats = service.verify_pending(limit=2)
@@ -323,7 +323,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
             1,
         )
 
-    def test_detail_failure_does_not_make_multiple_notice_requests(self):
+    def test_detail_failure_counts_as_risk_control_when_all_entries_fail(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [
             {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
@@ -332,7 +332,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.checker.fetch_official_lottery_notice.return_value = {
             'confirmed': False,
             'retryable': True,
-            'reason': 'detail_unavailable',
+            'reason': 'opus_detail_invalid_response',
         }
 
         stats = service.verify_pending(limit=2)
@@ -340,6 +340,64 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         self.assertEqual(stats['deferred'], 1)
         self.assertEqual(stats['cooldown_started'], 1)
         self.assertEqual(service.checker.fetch_official_lottery_notice.call_count, 1)
+
+    def test_risk_control_stops_immediately_but_timeout_does_not(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/2', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/3', 'status': '0'},
+        ]
+        service.scan_cache_dao.has_recent_failure.return_value = False
+        service.checker.fetch_official_lottery_notice.side_effect = [
+            {'confirmed': False, 'retryable': True, 'reason': 'timeout'},
+            {'confirmed': False, 'retryable': True, 'reason': 'html_risk_control'},
+            {'confirmed': False, 'retryable': False, 'reason': 'not_lottery'},
+        ]
+
+        stats = service.verify_pending(limit=3)
+
+        self.assertEqual(stats['checked'], 2)
+        self.assertEqual(stats['deferred'], 2)
+        self.assertEqual(stats['cooldown_started'], 1)
+        self.assertEqual(service.checker.fetch_official_lottery_notice.call_count, 2)
+
+    def test_duplicate_url_forms_are_verified_only_once(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://t.bilibili.com/123', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/123', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/456', 'status': '0'},
+        ]
+        service.scan_cache_dao.has_recent_failure.return_value = False
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False, 'retryable': False, 'reason': 'not_lottery'
+        }
+
+        stats = service.verify_pending(limit=3)
+
+        self.assertEqual(stats['checked'], 2)
+        self.assertEqual(
+            [c.args[1] for c in service.checker.fetch_official_lottery_notice.call_args_list],
+            ['https://t.bilibili.com/123', 'https://www.bilibili.com/opus/456'],
+        )
+
+    def test_stale_cached_url_is_not_rechecked_before_new_candidate(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
+            {'dyn_url': 'https://www.bilibili.com/opus/2', 'status': '0'},
+        ]
+        service.scan_cache_dao.has_recent_failure.side_effect = [True, False]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False, 'retryable': False, 'reason': 'not_lottery'
+        }
+
+        service.verify_pending(limit=2)
+
+        service.checker.fetch_official_lottery_notice.assert_called_once_with(
+            service.bro, 'https://www.bilibili.com/opus/2'
+        )
 
     def test_consecutive_unknown_responses_stop_the_batch_early(self):
         service = self.build_service()

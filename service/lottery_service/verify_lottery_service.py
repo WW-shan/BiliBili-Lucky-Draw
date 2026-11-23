@@ -103,26 +103,6 @@ class VerifyLotteryService(object):
                 note = candidate.get('note') or ''
                 if result.get('confirmed'):
                     lottery_end_time = result.get('lottery_end_time')
-                    # A plain-text rule with an explicit draw date but no parsed
-                    # deadline cannot be safely auto-executed after that date.
-                    # Keep it for review instead of treating an empty deadline as
-                    # "never expires".
-                    if (
-                        result.get('source') == 'plain_text'
-                        and lottery_end_time is None
-                        and any(
-                            marker in str(result.get('lottery_rule') or '')
-                            for marker in ('开奖', '月', '日', '截止')
-                        )
-                    ):
-                        self.scan_cache_dao.save_failure(
-                            'lottery', url, source, note, 'missing_parsed_deadline'
-                        )
-                        stats['deferred'] += 1
-                        mylogger.warning(
-                            '普通抽奖有开奖文字但截止时间解析失败，保留复核：%s', url
-                        )
-                        continue
                     stats['confirmed'] += 1
                     if self._is_expired(lottery_end_time):
                         self.draw_dao.update_sharedUrl(url=url, status='2')

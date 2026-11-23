@@ -225,7 +225,38 @@ class VerifyLotteryServiceTests(unittest.TestCase):
             url='https://www.bilibili.com/opus/9', status='5'
         )
 
-    def test_plain_text_rule_with_unparsed_deadline_is_not_queued(self):
+    def test_plain_text_rule_without_deadline_is_queued(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'}
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': True,
+            'source': 'plain_text',
+            'lottery_rule': {
+                'text': '关注并转发，抽取3位粉丝送出礼包。',
+                'required_actions': ['follow', 'forward'],
+            },
+            'lottery_id': '',
+            'lottery_end_time': None,
+            'reason': '',
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['confirmed'], 1)
+        self.assertEqual(stats['deferred'], 0)
+        service.ready_dao.upsert.assert_called_once_with(
+            'https://www.bilibili.com/opus/1', '', None,
+            lottery_kind='plain_text',
+            lottery_rule="{'text': '关注并转发，抽取3位粉丝送出礼包。', 'required_actions': ['follow', 'forward']}",
+            required_actions="['follow', 'forward']",
+        )
+        service.draw_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1', status='5'
+        )
+
+    def test_plain_text_rule_with_unparsed_deadline_is_still_queued(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [
             {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'}
@@ -244,11 +275,13 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
         stats = service.verify_pending(limit=1)
 
-        self.assertEqual(stats['deferred'], 1)
-        self.assertEqual(stats['confirmed'], 0)
-        service.ready_dao.upsert.assert_not_called()
-        service.draw_dao.update_sharedUrl.assert_not_called()
-        service.scan_cache_dao.save_failure.assert_called_once()
+        self.assertEqual(stats['confirmed'], 1)
+        self.assertEqual(stats['deferred'], 0)
+        service.ready_dao.upsert.assert_called_once()
+        service.draw_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1', status='5'
+        )
+
 
     def test_unknown_response_is_deferred_not_excluded(self):
         service = self.build_service()

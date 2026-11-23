@@ -431,6 +431,40 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         title = (modules.get('module_title') or {}).get('text') if isinstance(modules, dict) else ''
         return ' '.join(part for part in (title, desc.get('text') or '') if part)
 
+    def _restore_draw_text_from_page(self, bro, item):
+        """Fill missing body text for image/draw cards from the opus page."""
+        if not isinstance(item, dict):
+            return False
+        modules = item.get('modules') or {}
+        if isinstance(modules, dict):
+            module_dynamic = modules.get('module_dynamic') or {}
+        elif isinstance(modules, list):
+            module_dynamic = next(
+                (module.get('module_dynamic') for module in modules
+                 if isinstance(module, dict) and module.get('module_dynamic')),
+                {},
+            ) or {}
+        else:
+            module_dynamic = {}
+        major = module_dynamic.get('major') or {}
+        if major.get('type') != 'MAJOR_TYPE_DRAW':
+            return False
+        try:
+            body_text = self.get_dynamic_text(bro)
+        except Exception:
+            return False
+        body_text = str(body_text or '').strip()
+        if not body_text:
+            return False
+        desc = module_dynamic.get('desc')
+        if not isinstance(desc, dict):
+            desc = {}
+        desc['text'] = body_text
+        module_dynamic['desc'] = desc
+        if isinstance(modules, dict):
+            modules['module_dynamic'] = module_dynamic
+        return True
+
     @classmethod
     def classify_lottery_item(cls, item):
         """Classify an item by explicit giveaway evidence, not keywords alone."""
@@ -457,6 +491,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         context_words = (
             '抽奖合集', '合集更新', '上期传送门', '本期完', '往期',
             '关注我', '求关注', '广告', '购买', '商城', '优惠券',
+            '奖品稍后公布', '奖品待公布', '奖品后续公布',
+            '具体奖品另行通知', '奖品另行通知',
         )
         if any(word in normalized for word in context_words):
             result.update(kind='context_or_ad', reason='collection_or_ad')
@@ -493,9 +529,10 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         ):
             result.update(kind='suspected_giveaway', reason='missing_action')
             return result
-        if not any(word in normalized for word in date_words) and not has_numeric_date:
-            result.update(kind='suspected_giveaway', reason='missing_concrete_time')
-            return result
+        # A concrete draw date is helpful, but not required for participation.
+        # Bilibili posts frequently omit it or place it in an image; when the
+        # giveaway vocabulary, prize and participation action are all present,
+        # execute the known actions immediately.
 
         has_forward = (
             '转发' in normalized
@@ -665,6 +702,12 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 'retryable': True,
                 'reason': self.last_api_reason or 'detail_unavailable',
             }
+        # Picture/draw cards can expose an empty desc in the detail API while
+        # the opus page still contains the actual giveaway text. Recover that
+        # text before classification; otherwise we incorrectly fall through to
+        # the official lottery endpoint (and later see -9999).
+        if not self._dynamic_item_text(item).strip():
+            self._restore_draw_text_from_page(bro, item)
         classification = self.classify_lottery_item(item)
         has_official_component = self._has_official_lottery_component(item)
         if isinstance(item, dict) and not has_official_component:
@@ -682,6 +725,15 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     'lottery_id': '',
                     'lottery_end_time': plain_text_deadline,
                     'status': None,
+                }
+            if classification.get('kind') == 'suspected_giveaway':
+                # We have enough text to know it may be a giveaway, but the
+                # rule is incomplete. Querying the official endpoint cannot
+                # resolve that ambiguity and only produces noisy -9999 errors.
+                return {
+                    'confirmed': False,
+                    'retryable': True,
+                    'reason': classification.get('reason') or 'ambiguous_giveaway',
                 }
             # 详情里没有官方组件时，不能仅凭关键词判断不是抽奖；
             # 仍保留一次接口查询，避免把普通互动抽奖或接口隐藏组件漏掉。

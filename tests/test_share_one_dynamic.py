@@ -105,6 +105,26 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(share.last_api_reason, 'api_code:-9999')
 
+    def test_major_draw_falls_back_to_current_page_text(self):
+        item = {
+            'modules': {'module_dynamic': {
+                'desc': None,
+                'major': {'type': 'MAJOR_TYPE_DRAW', 'draw': {'id': '416371293'}},
+            }},
+        }
+        browser = Mock()
+        browser.find_element.return_value.get_attribute.return_value = (
+            '点赞、转发并关注 @HyperX极度未知 与 @极限竞速 Forza，'
+            '评论区聊聊产品，即有机会赢取礼包。'
+        )
+        share = DynamicShareBase()
+
+        with patch.object(share, 'get_dynamic_text', return_value='点赞、转发并关注，评论区聊聊产品，即有机会赢取礼包。'):
+            restored = share._restore_draw_text_from_page(browser, item)
+
+        self.assertTrue(restored)
+        self.assertIn('转发并关注', DynamicShareBase._dynamic_item_text(item))
+
     def test_opus_detail_modules_list_is_normalized_with_text(self):
         item = {
             'modules': [
@@ -419,7 +439,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['action'], 'comment')
 
-    def test_plain_text_giveaway_without_a_concrete_date_is_not_confirmed(self):
+    def test_plain_text_giveaway_without_a_concrete_date_is_confirmed(self):
         item = {
             'modules': {'module_dynamic': {
                 'desc': {'rich_text_nodes': [
@@ -429,8 +449,9 @@ class ShareOneDynamicTests(unittest.TestCase):
             }},
         }
         result = DynamicShareBase.classify_lottery_item(item)
-        self.assertFalse(result['confirmed'])
-        self.assertEqual(result['reason'], 'missing_concrete_time')
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['reason'], 'verified_text_rules')
+        self.assertEqual(result['required_actions'], ['follow', 'forward'])
 
     def test_giveaway_need_with_repost_and_prize_is_confirmed(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
@@ -488,8 +509,8 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertFalse(result['confirmed'])
         self.assertTrue(result['retryable'])
-        self.assertIn(result['reason'], ('missing_prize', 'api_code:-9999'))
-        self.assertGreater(browser.execute_async_script.call_count, 1)
+        self.assertEqual(result['reason'], 'missing_prize')
+        self.assertEqual(browser.execute_async_script.call_count, 1)
 
     def test_deadline_is_parsed_from_numbered_chinese_giveaway_time(self):
         self.assertEqual(

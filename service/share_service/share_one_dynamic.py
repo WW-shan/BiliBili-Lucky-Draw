@@ -626,7 +626,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         patterns = (
             r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
             r'(?P<month>\d{1,2})[/.-](?P<day>\d{1,2})\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
-            r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)(?=[^\n]{0,40}(?:开奖|抽取|截止|抽\d|[0-9]+个))',
+            r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)(?=[^\n]{0,60}(?:开奖|抽取|截止|揪\d|抽\d|[0-9]+个))',
             r'(?:(?P<month>\d{1,2})[/.-](?P<day>\d{1,2}))(?=[^\n]{0,40}(?:开奖|抽取|截止|抱走|抽\d|[0-9]+个))',
         )
         for pattern in patterns:

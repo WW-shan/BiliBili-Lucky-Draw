@@ -57,17 +57,19 @@ class LotteryReadyDaoTests(unittest.TestCase):
 
     def test_ready_table_is_migrated_to_utf8mb4_for_emoji_rules(self):
         db = Mock()
-        db.executeCommit.side_effect = [
-            None,
-            Exception('duplicate'),
-            Exception('duplicate'),
-            Exception('duplicate'),
-            None,
+        db.select_db.return_value = [
+            {'column_name': 'lottery_kind'},
+            {'column_name': 'lottery_rule'},
+            {'column_name': 'required_actions'},
         ]
         LotteryReadyDao(db)
 
         statements = [call.args[0] for call in db.executeCommit.call_args_list]
         self.assertTrue(any('CONVERT TO CHARACTER SET utf8mb4' in s for s in statements))
+        self.assertFalse(any(
+            'ADD COLUMN lottery_kind' in s for s in statements
+        ))
+
 
     def test_restore_live_ready_statuses_prefers_rule_over_stale_url_status(self):
         db = Mock()

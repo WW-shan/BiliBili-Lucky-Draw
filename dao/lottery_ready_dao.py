@@ -25,19 +25,30 @@ class LotteryReadyDao(object):
         self.db.executeCommit(sql)
         # MySQL 的 CREATE TABLE IF NOT EXISTS 不会给旧表补列。
         # 用可重复执行的 ALTER 保证已有数据库也能支持普通抽奖。
-        migrations = (
-            "ALTER TABLE t_lottery_ready MODIFY lottery_id varchar(64) NULL",
-            "ALTER TABLE t_lottery_ready ADD COLUMN lottery_kind varchar(32) NOT NULL DEFAULT 'official'",
-            "ALTER TABLE t_lottery_ready ADD COLUMN lottery_rule text NULL",
-            "ALTER TABLE t_lottery_ready ADD COLUMN required_actions text NULL",
-            "ALTER TABLE t_lottery_ready CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
+        required_columns = {
+            'lottery_kind': "varchar(32) NOT NULL DEFAULT 'official'",
+            'lottery_rule': 'text NULL',
+            'required_actions': 'text NULL',
+        }
+        try:
+            existing = self.db.select_db(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() "
+                "AND table_name = 't_lottery_ready'"
+            ) or []
+            existing_names = {str(row.get('column_name') or '').lower() for row in existing}
+        except Exception:
+            existing_names = set()
+        for column, definition in required_columns.items():
+            if column in existing_names:
+                continue
+            self.db.executeCommit(
+                "ALTER TABLE t_lottery_ready ADD COLUMN %s %s" % (column, definition)
+            )
+        self.db.executeCommit(
+            "ALTER TABLE t_lottery_ready CONVERT TO CHARACTER SET utf8mb4 "
+            "COLLATE utf8mb4_general_ci"
         )
-        for statement in migrations:
-            try:
-                self.db.executeCommit(statement)
-            except Exception:
-                # ADD COLUMN 在已迁移数据库上会报重复列；不阻断启动。
-                pass
 
     @staticmethod
     def _literal(value):

@@ -96,6 +96,23 @@ class MainWorkflowTests(unittest.TestCase):
         self.assertEqual(iteration.call_count, 3)
         self.assertEqual(clock.sleep.call_count, 1)
 
+    def test_pipeline_honors_verification_cooldown(self):
+        counts = iter([
+            {'ready': 0, 'pending': 5},
+            {'ready': 0, 'pending': 5},
+        ])
+        with patch.object(main, 'get_queue_counts', side_effect=lambda: next(counts)), patch(
+            'main.VerifyLotteryService'
+        ) as verifier, patch.object(main, 'time') as clock:
+            verifier.return_value.verify_pending.return_value = {
+                'checked': 3, 'confirmed': 0, 'excluded': 0, 'deferred': 3,
+                'expired': 0, 'cooldown_started': 1,
+            }
+            progressed = main.run_pipeline_iteration()
+
+        self.assertFalse(progressed)
+        clock.sleep.assert_called_once_with(15 * 60)
+
     def test_transient_selenium_session_failure_does_not_pause_worker(self):
         with patch.object(main, '_workflow_paused', False), patch.object(
             main,

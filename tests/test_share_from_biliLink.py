@@ -51,7 +51,7 @@ class BiliLinkShareTests(unittest.TestCase):
         rows = BiliLinkShare.get_today_dynamic_links(service)
 
         self.assertEqual(rows, [{'dyn_url': 'ready'}])
-        service.lottery_ready_dao.query_ready.assert_called_once_with(limit=10)
+        service.lottery_ready_dao.query_ready.assert_called_once_with(limit=20)
 
     def test_verified_queue_starts_browser_before_login(self):
         service = self.build_service()

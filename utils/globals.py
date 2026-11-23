@@ -78,9 +78,10 @@ discovery_interval_hours = max(
     int(os.getenv("DISCOVERY_INTERVAL_HOURS", str(schedule_interval_hours))),
 )
 action_interval_minutes = max(1, int(os.getenv("ACTION_INTERVAL_MINUTES", "5")))
-verify_batch_limit = max(1, int(os.getenv("VERIFY_BATCH_LIMIT", "10")))
+verify_batch_limit = max(1, int(os.getenv("VERIFY_BATCH_LIMIT", "20")))
 auto_run_on_start = os.getenv("AUTO_RUN_ON_START", "true").strip().lower() in ("1", "true", "yes", "y")
-share_batch_limit = max(1, int(os.getenv("SHARE_BATCH_LIMIT", "5")))
+share_batch_limit = max(1, int(os.getenv("SHARE_BATCH_LIMIT", "20")))
+idle_poll_seconds = max(1, int(os.getenv("IDLE_POLL_SECONDS", "30")))
 detail_request_min_seconds = max(
     0, int(os.getenv("DETAIL_REQUEST_MIN_SECONDS", "3"))
 )

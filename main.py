@@ -9,6 +9,7 @@ from service.lottery_service.verify_lottery_service import VerifyLotteryService
 from service.search_draw_dynamic_service.SearchDynamicByUps import SearchDynamicByUps
 from service.share_service.multi_users_share import MultiUsersShareService
 from utils import globals
+from utils.webdriver_util import cleanup_stale_selenium_sessions
 
 
 mylogger = MyLogger('main.py').getLogger()
@@ -117,6 +118,12 @@ def run_safely():
 
 def run_continuous_worker():
     """Run immediately and continuously; sleep only when no work progressed."""
+    try:
+        removed = cleanup_stale_selenium_sessions()
+        if removed:
+            mylogger.warning('启动时清理 Selenium 残留会话：%s', removed)
+    except Exception:
+        mylogger.warning('启动时清理 Selenium 残留会话失败', exc_info=True)
     mylogger.info('连续流水线已启动：无固定 5 分钟/4 小时等待。')
     while True:
         try:

@@ -5,6 +5,10 @@ from selenium.webdriver import ChromeOptions
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+import json
+import urllib.error
+import urllib.request
+
 from utils import globals
 
 
@@ -98,6 +102,31 @@ def online_driver():
         except Exception:
             pass
         raise
+
+def cleanup_stale_selenium_sessions():
+    """Delete sessions left behind by a previous worker process."""
+    base = globals.selenium_url.rstrip('/')
+    try:
+        with urllib.request.urlopen(base + '/status', timeout=10) as response:
+            payload = json.load(response)
+    except Exception:
+        return 0
+    removed = 0
+    for node in (payload.get('value') or {}).get('nodes') or []:
+        for slot in node.get('slots') or []:
+            session_id = (slot.get('session') or {}).get('sessionId')
+            if not session_id:
+                continue
+            request = urllib.request.Request(
+                base + '/session/' + str(session_id), method='DELETE'
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10):
+                    removed += 1
+            except Exception:
+                continue
+    return removed
+
 
 def init_webdriver():
 

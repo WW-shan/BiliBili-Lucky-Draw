@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from utils import globals
-from utils.webdriver_util import ElementUtil, online_driver
+from utils.webdriver_util import ElementUtil, cleanup_stale_selenium_sessions, online_driver
 
 
 class WebDriverOptionsTests(unittest.TestCase):
@@ -22,6 +22,34 @@ class WebDriverOptionsTests(unittest.TestCase):
         remote.return_value.set_script_timeout.assert_called_once_with(
             globals.selenium_script_timeout
         )
+
+    def test_startup_cleanup_removes_every_stale_selenium_session(self):
+        status = {
+            'value': {
+                'nodes': [{
+                    'slots': [
+                        {'session': {'sessionId': 'one'}},
+                        {'session': {'sessionId': 'two'}},
+                        {'session': None},
+                    ],
+                }],
+            },
+        }
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read = Mock(return_value=b'')
+        response.__iter__ = Mock(return_value=iter([]))
+
+        with patch('utils.webdriver_util.urllib.request.urlopen') as urlopen, patch(
+            'utils.webdriver_util.json.load', return_value=status
+        ):
+            urlopen.return_value.__enter__ = Mock(return_value=response)
+            urlopen.return_value.__exit__ = Mock(return_value=False)
+            removed = cleanup_stale_selenium_sessions()
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(urlopen.call_count, 3)
 
     @patch('utils.webdriver_util.webdriver.Remote')
     def test_online_driver_cleans_up_when_timeout_configuration_fails(self, remote):

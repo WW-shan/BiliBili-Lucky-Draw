@@ -661,7 +661,20 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         action_scope = re.sub(
             r'扣\s*[0-9一二三四五六七八九十]', '评论', action_scope
         )
-        has_action = any(
+        # A direct question to readers is a comment prompt when the same post
+        # contains a giveaway. Do not infer from comments alone, and keep
+        # generic discussion such as "聊聊本期播客" out of this rule.
+        direct_comment_prompt = bool(
+            re.search(
+                r'(?:说说|回答|分享|聊聊)[^。！!？?]{1,60}(?:点|哪个|什么|看法|感受|答案)',
+                action_scope,
+            )
+            or re.search(
+                r'(?:你|大家)[^。！!？?]{1,60}[？?]',
+                action_scope,
+            )
+        )
+        has_action = direct_comment_prompt or any(
             word in action_scope for word in (
                 '关注', '转发', '评论', '留言', '点赞', '预约', '五连', '5️⃣连',
                 '三连', '3️⃣连', '4连', '四连', '卷管赞平', 'plq', '关转', '关+转', '关&转', '转评',
@@ -793,7 +806,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         # "评论区" is discussion context, not an action by itself. Require an
         # explicit comment verb; "plq" is the common Bilibili abbreviation.
-        has_comment = compact_actions or any(
+        has_comment = direct_comment_prompt or compact_actions or any(
             word in action_scope for word in (
                 '评论', '留言', 'plq', '评论区留', '评论区抽', '评论抽',
                 '关转评', '转+评', '转评',

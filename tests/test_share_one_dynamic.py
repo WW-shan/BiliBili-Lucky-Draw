@@ -1225,6 +1225,22 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.date().isoformat(), '2026-10-31')
 
+    def test_question_prompt_for_display_parameters_is_comment_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '说说这块屏最吸引你的点。11.16抽一位小伙伴送【HKC精美周边】'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['comment'])
+
+    def test_question_prompt_for_product_preference_is_comment_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '你挑显示器，最先看哪个参数？是尺寸、刷新率还是色域？11.24抽一个小伙伴送【HKC限定周边】'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['comment'])
+
     def test_roundup_talk_copy_does_not_add_comment_action(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '聊聊本期播客，转+关抽两位送抱枕。'},

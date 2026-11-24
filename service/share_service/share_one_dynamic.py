@@ -153,7 +153,15 @@ class DynamicShareBase(object):
                     return
             if self.notice_lottery_time is not None:
                 self.lottery_time = self.notice_lottery_time
-            if self.lottery_time is None:
+            # A plain-text lottery already verified without a deadline must
+            # not be re-interpreted from the page at action time. The page
+            # often contains publication or campaign dates that are not the
+            # participation deadline and can falsely mark a valid entry as
+            # expired.
+            if (
+                self.lottery_time is None
+                and not (lottery_kind == 'plain_text' and lottery_end_time is None)
+            ):
                 self.resolve_lottery_time(bro)
             if self.is_expired_dynamic(bro):
                 self.status = 2

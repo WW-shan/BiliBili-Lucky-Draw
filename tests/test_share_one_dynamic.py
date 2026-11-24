@@ -296,6 +296,27 @@ class ShareOneDynamicTests(unittest.TestCase):
         now = datetime(2026, 11, 22, 16, 45, tzinfo=timezone.utc)
         self.assertFalse(DynamicShareBase._is_expired_deadline(deadline, now=now))
 
+    def test_plain_text_without_deadline_skips_page_expiry_guess(self):
+        share = DynamicShareBase()
+        browser = Mock()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'get_dynamic_text', return_value=''
+        ), patch.object(share, 'ensure_publish_cookie'), patch.object(
+            share, 'resolve_lottery_time'
+        ) as resolve:
+            share.share_one(
+                browser,
+                Mock(),
+                'https://www.bilibili.com/opus/1272686422850011137',
+                'share',
+                'comment',
+                lottery_kind='plain_text',
+                required_actions=[],
+            )
+
+        self.assertEqual(share.share_status, 0)
+        resolve.assert_not_called()
+
     def test_preverified_expired_lottery_stops_before_page_time_parsing_or_actions(self):
         share = DynamicShareBase()
         with patch.object(share, 'wait_page_ready'), patch.object(

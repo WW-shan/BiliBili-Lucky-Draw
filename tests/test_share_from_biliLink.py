@@ -57,6 +57,38 @@ class BiliLinkShareTests(unittest.TestCase):
         self.assertEqual(rows, [{'dyn_url': 'ready'}])
         service.lottery_ready_dao.query_ready.assert_called_once_with(limit=20, user_id='35549700')
 
+    def test_action_failure_removes_rule_to_avoid_immediate_retry_loop(self):
+        service = self.build_service()
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+        login.ensure_publish_cookie.return_value = None
+        dynamic = Mock()
+        dynamic.share_status = 3
+        dynamic.last_error = '转发状态未能确认，稍后重试'
+        dynamic.get_risk_control_evidence.return_value = None
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase',
+            return_value=dynamic,
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_share_content',
+            return_value='share',
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_comment_content',
+            return_value='comment',
+        ):
+            service.do_share_by_links()
+
+        service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1270000000000000001', status=0
+        )
+        service.lottery_ready_dao.delete_by_url.assert_called_once_with(
+            'https://www.bilibili.com/opus/1270000000000000001'
+        )
+
     def test_historical_dynamic_is_not_executed_as_a_lottery(self):
         service = self.build_service()
         service.get_today_dynamic_links.return_value = [

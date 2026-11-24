@@ -156,6 +156,10 @@ class BiliLinkShare(object):
                         self.draw_dynamic_dao.update_sharedUrl(
                             url=lucky_dynamic_url, status=0
                         )
+                        # A failed action needs a fresh verification pass. Do
+                        # not leave a live rule that the verifier will promote
+                        # straight back to status 5 on the same tick.
+                        self.lottery_ready_dao.delete_by_url(lucky_dynamic_url)
                         continue
                 if dyn.share_status == 2:
                     self.draw_dynamic_dao.update_sharedUrl(

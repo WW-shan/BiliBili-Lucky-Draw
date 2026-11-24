@@ -46,6 +46,13 @@ class BiliLinkShareTests(unittest.TestCase):
         self.assertTrue(service.owns_browser)
         self.assertIsNone(service.bro)
 
+    def test_rule_texts_are_extracted_for_successful_forward_confirmation(self):
+        service = self.build_service()
+        texts = service._rule_texts({
+            'lottery_rule': "{'text': '薄雪初积，轻揽冬辰 转发关注抽1个支架'}",
+        })
+        self.assertEqual(texts, ['薄雪初积，轻揽冬辰 转发关注抽1个支架'])
+
     def test_action_queue_reads_only_verified_ready_rows(self):
         service = BiliLinkShare.__new__(BiliLinkShare)
         service.user_id = '35549700'
@@ -250,6 +257,7 @@ class BiliLinkShareTests(unittest.TestCase):
             lottery_kind='official',
             lottery_rule=None,
             required_actions=None,
+            original_texts=[],
         )
         service.share_info_dao.insert_shareInfo.assert_called_once_with(dynamic)
         service.draw_dynamic_dao.mark_shared_by_dynamic_id.assert_called_once_with(

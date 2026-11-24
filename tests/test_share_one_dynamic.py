@@ -79,6 +79,53 @@ class ShareOneDynamicTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 share.click_favorite(browser, Mock())
 
+    def test_forward_detection_matches_rendered_page_text_without_card_id(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        share.forward_confirm_timeout_seconds = 0.2
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1268630998801711121'
+        browser.execute_script.return_value = 'complete'
+        body = Mock()
+        body.text = (
+            '梦与时光遇-- 7小时前 来了 三只松鼠官方 鼠鼠新品抢先尝 '
+            '主人早上好 突然的降温还没准备好 转发+关注@三只松鼠官方 抽1位主人送冬季温暖新品'
+        )
+        card = Mock()
+        card.get_attribute.side_effect = lambda name: '梦与时光遇-- 7小时前 来了' if name in ('innerText', 'outerHTML') else ''
+        card.find_elements.return_value = []
+        browser.find_element.return_value = body
+        share.get_visible_elements = Mock(return_value=[card])
+        with patch('service.share_service.share_one_dynamic.time.sleep'):
+            result = share.is_already_forwarded(
+                browser,
+                'https://www.bilibili.com/opus/1268630998801711121',
+                ['主人早上好 突然的降温还没准备好 转发+关注 抽1位主人送冬季温暖新品'],
+            )
+        self.assertTrue(result)
+
+    def test_forward_detection_matches_saved_rule_text_without_original_id(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1273316930516680745'
+        browser.execute_script.return_value = 'complete'
+        card = Mock()
+        card.get_attribute.side_effect = lambda name: (
+            '薄雪初积，轻揽冬辰 来酷Air 14酷睿版 990g轻薄机身 转发关注抽1个笔记本支架'
+            if name == 'innerText' else ''
+        )
+        card.find_elements.return_value = []
+        browser.find_elements.return_value = [card]
+        share.get_visible_elements = Mock(return_value=[card])
+        with patch('service.share_service.share_one_dynamic.time.sleep'):
+            result = share.is_already_forwarded(
+                browser,
+                'https://www.bilibili.com/opus/1273316930516680745',
+                ['薄雪初积，轻揽冬辰\n来酷Air 14酷睿版\n990g轻薄机身，踏处不留痕\n<转发+关注>抽1个【来酷笔记本支架】'],
+            )
+        self.assertTrue(result)
+
     def test_forward_detection_rechecks_slow_dynamic_feed(self):
         share = DynamicShareBase()
         share.user_id = '35549700'

@@ -1,3 +1,5 @@
+import ast
+import json
 import re
 
 from dao.draw_dynamic_dao import DrawDynamicDao
@@ -119,6 +121,7 @@ class BiliLinkShare(object):
                     lottery_kind=data.get('lottery_kind') or 'official',
                     lottery_rule=data.get('lottery_rule'),
                     required_actions=data.get('required_actions'),
+                    original_texts=self._rule_texts(data),
                 )
                 if dyn.last_error:
                     evidence = dyn.get_risk_control_evidence(dyn.last_error)
@@ -146,6 +149,7 @@ class BiliLinkShare(object):
                                 lottery_kind=data.get('lottery_kind') or 'official',
                                 lottery_rule=data.get('lottery_rule'),
                                 required_actions=data.get('required_actions'),
+                                original_texts=self._rule_texts(data),
                             )
                             if not dyn.last_error:
                                 lucky_dynamic_url = canonical_url
@@ -243,6 +247,36 @@ class BiliLinkShare(object):
         if len(links) != 0:
             return links.split('|')
         return {}
+
+    @staticmethod
+    def _rule_texts(data):
+        """Extract stable text fingerprints from the verified rule payload."""
+        raw = data.get('lottery_rule')
+        if isinstance(raw, (dict, list, tuple)):
+            rules = raw
+        elif raw:
+            try:
+                rules = json.loads(raw)
+            except Exception:
+                try:
+                    # t_lottery_ready stores str(dict), which is valid Python
+                    # but not strict JSON.
+                    rules = ast.literal_eval(str(raw))
+                except Exception:
+                    rules = []
+        else:
+            rules = []
+        if isinstance(rules, dict):
+            rules = [rules]
+        texts = []
+        for rule in rules if isinstance(rules, (list, tuple)) else []:
+            if isinstance(rule, dict):
+                text = str(rule.get('text') or '').strip()
+            else:
+                text = str(rule or '').strip()
+            if text and text not in texts:
+                texts.append(text)
+        return texts
 
     def get_today_dynamic_links(self):
         """只读取已确认官方 lottery_id 的可执行队列。"""

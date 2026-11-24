@@ -104,6 +104,7 @@ class DynamicShareBase(object):
         self.last_api_reason = None
         self.detail_request_min_seconds = globals.detail_request_min_seconds
         self.detail_request_max_seconds = globals.detail_request_max_seconds
+        self.forward_confirm_timeout_seconds = 45
 
     def share_one(
         self,
@@ -116,6 +117,7 @@ class DynamicShareBase(object):
         lottery_kind='official',
         lottery_rule=None,
         required_actions=None,
+        original_texts=None,
     ):
         """
         提供需要转发的抽奖动态URL，然后“执行状态、up主的ID、up主的主页URL”等信息
@@ -134,6 +136,7 @@ class DynamicShareBase(object):
             except Exception:
                 required_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
         self.required_actions = list(required_actions or [])
+        self.original_texts = list(original_texts or [])
         try:
             bro.get(lucky_dynamic_url)
             self.wait_page_ready(bro)
@@ -197,7 +200,7 @@ class DynamicShareBase(object):
             if 'forward' in self.required_actions:
                 already_forwarded = self.is_already_forwarded(
                     bro, lucky_dynamic_url,
-                    getattr(self, 'original_dynamic_text', ''),
+                    self.original_texts or getattr(self, 'original_dynamic_text', ''),
                 )
                 if already_forwarded:
                     mylogger.info("当前账号已转发，跳过转发")
@@ -210,7 +213,7 @@ class DynamicShareBase(object):
                     self.click_share(bro, chains, share_content)
                     confirmed = self.is_already_forwarded(
                         bro, lucky_dynamic_url,
-                        getattr(self, 'original_dynamic_text', ''),
+                        self.original_texts or getattr(self, 'original_dynamic_text', ''),
                     )
                     if confirmed is False:
                         raise Exception("转发提交后未在个人动态确认")
@@ -2008,19 +2011,51 @@ if (comments) comments.scrollIntoView({block: 'center'});
                 lambda driver: driver.execute_script('return document.readyState')
                 in ('interactive', 'complete')
             )
-            deadline = time.monotonic() + 45
-            cards = []
+            deadline = time.monotonic() + float(self.forward_confirm_timeout_seconds)
+            reloaded = False
+            fingerprints = original_text if isinstance(original_text, (tuple, list)) else [original_text]
+            fingerprint_windows = set()
+            for fingerprint in fingerprints:
+                normalized = re.sub(
+                    r'[^0-9a-z\u4e00-\u9fff]+', '',
+                    str(fingerprint or '').lower(),
+                )
+                if len(normalized) < 15:
+                    continue
+                fingerprint_windows.update(
+                    normalized[index:index + 15]
+                    for index in range(len(normalized) - 14)
+                )
+            started = time.monotonic()
             while time.monotonic() < deadline:
                 cards = self.get_visible_elements(bro, '.bili-dyn-item')
+                try:
+                    body_text = str(
+                        bro.find_element(By.TAG_NAME, 'body').text or ''
+                    )
+                except Exception:
+                    body_text = ''
+                normalized_body = re.sub(
+                    r'[^0-9a-z\u4e00-\u9fff]+', '',
+                    str(body_text).lower(),
+                )
+                if dynamic_id in body_text:
+                    bro.get(original_url)
+                    return True
+                if any(fragment in normalized_body for fragment in fingerprint_windows):
+                    bro.get(original_url)
+                    return True
                 for card in cards:
                     html = card.get_attribute('outerHTML') or ''
                     text = (card.get_attribute('innerText') or card.text or '')
                     if dynamic_id in html or dynamic_id in text:
                         bro.get(original_url)
                         return True
-                    fingerprint = re.sub(r'\s+', '', str(original_text or ''))[:40]
-                    normalized_card = re.sub(r'\s+', '', str(text or ''))
-                    if fingerprint and fingerprint in normalized_card:
+                    normalized_card = re.sub(
+                        r'[^0-9a-z\u4e00-\u9fff]+', '',
+                        str(text or '').lower(),
+                    )
+                    if any(fragment in normalized_card for fragment in fingerprint_windows):
                         bro.get(original_url)
                         return True
                     links = card.find_elements(By.TAG_NAME, 'a')
@@ -2029,6 +2064,15 @@ if (comments) comments.scrollIntoView({block: 'center'});
                         if dynamic_id in href:
                             bro.get(original_url)
                             return True
+                # If the SPA rendered an empty shell or only the first page,
+                # reload once and continue scrolling. This is read-only.
+                if not reloaded and time.monotonic() - started >= 12:
+                    reloaded = True
+                    try:
+                        bro.refresh()
+                    except Exception:
+                        bro.get(space_url)
+                bro.execute_script('window.scrollBy(0, 900)')
                 time.sleep(1.5)
             # A slow SPA render is not evidence that forwarding did not
             # happen. Do not risk a duplicate post; callers must verify the

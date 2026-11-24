@@ -4,6 +4,7 @@ from dao.draw_dynamic_dao import DrawDynamicDao
 from dao.follow_up_dao import FollowUpInfoDao
 from dao.init_db import init_db
 from dao.lottery_ready_dao import LotteryReadyDao
+from dao.scan_cache_dao import ScanCacheDao
 from dao.share_info_dao import ShareInfoDao
 from dao.statistics_dao import StatisticsDao
 from service.bilibili_errors import (
@@ -38,6 +39,7 @@ class BiliLinkShare(object):
         self.follow_up_dao = FollowUpInfoDao(db)
         self.draw_dynamic_dao = DrawDynamicDao(db)
         self.lottery_ready_dao = LotteryReadyDao(db)
+        self.scan_cache_dao = ScanCacheDao(db)
         self.statistics_dao = StatisticsDao(db)
         mylogger.info("启动：根据B站up主的分享链接进行抽奖动态转发!")
 
@@ -156,9 +158,16 @@ class BiliLinkShare(object):
                         self.draw_dynamic_dao.update_sharedUrl(
                             url=lucky_dynamic_url, status=0
                         )
-                        # A failed action needs a fresh verification pass. Do
-                        # not leave a live rule that the verifier will promote
-                        # straight back to status 5 on the same tick.
+                        # Record a failure tombstone before removing the ready
+                        # rule. restore_live_ready_statuses() checks this cache
+                        # and will not immediately promote the row back to 5.
+                        self.scan_cache_dao.save_failure(
+                            'lottery',
+                            lucky_dynamic_url,
+                            data.get('source') or '',
+                            data.get('note') or '',
+                            (dyn.last_error or 'action_failed')[:500],
+                        )
                         self.lottery_ready_dao.delete_by_url(lucky_dynamic_url)
                         continue
                 if dyn.share_status == 2:

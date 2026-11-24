@@ -115,6 +115,14 @@ class LotteryReadyDao(object):
                     = SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
                 AND s.user_id = %s
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM t_scan_cache c
+              WHERE c.scan_type = 'lottery'
+                AND c.scan_url = d.dyn_url
+                AND c.status = '3'
+                AND COALESCE(c.update_time, c.insert_time)
+                    > NOW() - INTERVAL 15 MINUTE
+          )
           AND SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
               REGEXP '^[0-9]+$'
         """ % user_id

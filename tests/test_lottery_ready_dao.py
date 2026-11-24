@@ -107,6 +107,17 @@ class LotteryReadyDaoTests(unittest.TestCase):
         self.assertIn('t_share_info', sql)
         self.assertIn("s.user_id = '35549700'", sql)
 
+    def test_restore_live_ready_statuses_honors_failure_tombstone(self):
+        db = Mock()
+        dao = LotteryReadyDao(db)
+
+        dao.restore_live_ready_statuses()
+
+        sql = db.executeCommit.call_args.args[0].lower()
+        self.assertIn('t_scan_cache', sql)
+        self.assertIn("c.status = '3'", sql)
+        self.assertIn('interval 15 minute', sql)
+
     def test_query_by_url_returns_single_rule(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'ready', 'lottery_end_time': '2099-01-01'}]

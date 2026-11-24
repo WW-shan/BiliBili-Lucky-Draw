@@ -19,6 +19,7 @@ class BiliLinkShareTests(unittest.TestCase):
         service.share_info_dao = Mock()
         service.follow_up_dao = Mock()
         service.lottery_ready_dao = Mock()
+        service.scan_cache_dao = Mock()
         service.get_today_dynamic_links = Mock(return_value=[{'dyn_url': url}])
         service.get_ignore_link = Mock(return_value=[])
         return service
@@ -85,6 +86,7 @@ class BiliLinkShareTests(unittest.TestCase):
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
             url='https://www.bilibili.com/opus/1270000000000000001', status=0
         )
+        service.scan_cache_dao.save_failure.assert_called_once()
         service.lottery_ready_dao.delete_by_url.assert_called_once_with(
             'https://www.bilibili.com/opus/1270000000000000001'
         )

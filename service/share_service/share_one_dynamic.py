@@ -549,9 +549,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # 获奖名单"); only treat it as a finished result when paired with
         # result context below.
         result_words = (
-            '中奖名单', '开奖名单', '抽奖结果', '开奖结果',
-            '恭喜获奖', '获奖公告', '已开奖', '中奖公布',
-            '获奖名单如下', '中奖名单如下',
+            '抽奖结果', '开奖结果', '恭喜获奖', '获奖公告',
+            '已开奖', '中奖公布', '获奖名单如下', '中奖名单如下',
         )
         past_result_words = (
             '已抽奖', '已抽取', '已送出', '已经送出', '已赠送', '已发放',

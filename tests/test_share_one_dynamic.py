@@ -874,6 +874,20 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['required_actions'], ['follow', 'comment'])
 
+    def test_future_winner_announcement_does_not_make_live_giveaway_a_result(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '【动态抽奖】11 月 30 日送苹果 iPhone 18 Pro Max 手机 1TB 版。'
+                '参与方式：关注，转发、评论、点赞此动态即可。'
+                '开奖时间：11 月 30 日，第二天公布中奖名单。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue(
+            {'follow', 'comment', 'like', 'forward'}.issubset(result['required_actions'])
+        )
+
     def test_five_lian_emoji_is_parsed_as_like_comment_forward(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (

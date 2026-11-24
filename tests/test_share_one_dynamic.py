@@ -55,6 +55,18 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertEqual(share.share_status, 3)
         self.assertIn('未能确认', share.last_error)
 
+    def test_like_must_be_confirmed_on_the_page(self):
+        browser = Mock()
+        share = DynamicShareBase()
+        button = Mock()
+        button.get_attribute.return_value = 'side-toolbar__action like'
+        share.wait_clickable_css = Mock(return_value=button)
+        with patch.object(share, 'click_by_js'), patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            with self.assertRaises(Exception):
+                share.click_like(browser, Mock())
+
     def test_favorite_must_be_confirmed_on_the_page(self):
         browser = Mock()
         share = DynamicShareBase()

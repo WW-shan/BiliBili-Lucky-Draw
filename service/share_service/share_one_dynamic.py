@@ -2176,6 +2176,10 @@ fetch('https://api.bilibili.com/x/relation?fid=' + encodeURIComponent(fid), {cre
                 mylogger.info("动态已点赞，跳过点赞")
                 return
             self.click_by_js(bro, like_btn)
+            random_sleep(start=1, end=2)
+            like_btn = self.wait_clickable_css(bro, self.LIKE_CSS)
+            if not self.is_done_text(like_btn, ["active", "liked", "已赞"]):
+                raise Exception("点赞操作提交后未确认")
         except Exception as e:
             mylogger.error("[click_like 点击“点赞” 出错 %s]" % e, exc_info=True)
             raise

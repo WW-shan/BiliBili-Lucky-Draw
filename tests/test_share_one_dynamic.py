@@ -377,6 +377,45 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(restored)
         self.assertIn('转发并关注', DynamicShareBase._dynamic_item_text(item))
 
+    def test_major_opus_summary_text_is_extracted_for_lottery_classification(self):
+        item = {'modules': {'module_dynamic': {
+            'desc': None,
+            'major': {
+                'type': 'MAJOR_TYPE_OPUS',
+                'opus': {'summary': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_LOTTERY', 'text': '互动抽奖'},
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': ' 恭喜BLG夺冠！抽奖 2W现金！关注我并且转发这个动态就可以！'},
+                ]}},
+            },
+        }}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'forward'])
+
+    def test_official_draw_with_explicit_opus_rules_does_not_need_notice_api(self):
+        item = {'modules': {'module_dynamic': {
+            'desc': None,
+            'major': {
+                'type': 'MAJOR_TYPE_OPUS',
+                'opus': {'summary': {'rich_text_nodes': [
+                    {'type': 'RICH_TEXT_NODE_TYPE_LOTTERY', 'text': '互动抽奖'},
+                    {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': ' 恭喜BLG夺冠！抽奖 2W现金！关注我并且转发这个动态就可以！'},
+                ]}},
+            },
+        }}}
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value=item)
+        browser = Mock()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1272729050457047049', retries=1
+        )
+
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['source'], 'plain_text')
+        self.assertEqual(result['lottery_rule']['required_actions'], ['follow', 'forward'])
+        browser.execute_async_script.assert_not_called()
+
     def test_opus_detail_modules_list_is_normalized_with_text(self):
         item = {
             'modules': [
@@ -1343,6 +1382,92 @@ class ShareOneDynamicTests(unittest.TestCase):
         result = DynamicShareBase.classify_lottery_item(item)
         self.assertTrue(result['confirmed'], result)
         self.assertEqual(result['required_actions'], ['comment'])
+
+    def test_hashtags_do_not_create_social_actions(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '老规矩～11月27日揪10位得同款 #转发抽奖# #互动抽奖#'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'], result)
+        self.assertEqual(result['reason'], 'missing_action')
+
+    def test_hashtags_do_not_add_actions_to_explicit_follow_rule(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注我，11月27日揪10位得同款 #转发抽奖# #互动抽奖#'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow'])
+
+    def test_hashtag_forward_does_not_expand_explicit_actions_to_three_lian(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注+点赞+评论，11月27日揪10位得同款 #转发抽奖#'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'like'])
+
+    def test_accessory_calendar_prize_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '评论区留下你的猜测，将随机抽5人送出「亚克力万年历」'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['comment'])
+
+    def test_cream_prize_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注本喵并转发+评论这条动态，本喵将选出一位b友送出适乐肤单罐C霜'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'follow', 'comment', 'forward'}.issubset(result['required_actions']))
+
+    def test_character_outfit_prize_and_turn_follow_comment_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '转关评，抽6位送 鼠鼠滑雪大冒险 个性装扮1套'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'follow', 'comment', 'forward'}.issubset(result['required_actions']))
+
+    def test_bracketed_book_title_counts_as_prize(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '点赞评论转发随机抽一名。乔剑《WorkBuddy实战》'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'comment', 'like', 'forward'}.issubset(result['required_actions']))
+
+    def test_bracketed_book_title_before_draw_verb_counts_as_prize(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '乔剑《WorkBuddy实战》从入门到交付。'
+                '点赞评论转发随机抽一名。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'comment', 'like', 'forward'}.issubset(result['required_actions']))
+
+    def test_follower_eligibility_is_recognized_as_follow_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '十万粉抽奖活动，只要你是我的粉丝都可以参与抽奖喔~ '
+                '一等奖：机械键盘 x1'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow'])
+
+    def test_past_draw_mention_does_not_block_current_giveaway(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '转发+关注+评论11月28号开奖，送出品牌玩偶+帆布袋+徽章。往期皆已开奖寄出。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'follow', 'comment', 'forward'}.issubset(result['required_actions']))
 
     def test_roundup_talk_copy_does_not_add_comment_action(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [

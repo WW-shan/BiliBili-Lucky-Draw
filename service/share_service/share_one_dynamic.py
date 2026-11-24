@@ -559,6 +559,28 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     opus_parts.append(str(value))
         if opus_parts:
             return ' '.join(opus_parts)
+        major = module_dynamic.get('major') or {}
+        opus_summary = ((major.get('opus') or {}).get('summary') or {})
+        opus_summary_text = ' '.join(
+            str(node.get('text') or '')
+            for node in opus_summary.get('rich_text_nodes') or []
+            if isinstance(node, dict)
+        )
+        if not opus_summary_text.strip():
+            summary_paragraphs = []
+            for paragraph in opus_summary.get('paragraphs') or []:
+                for node in ((paragraph.get('text') or {}).get('nodes') or []):
+                    if not isinstance(node, dict):
+                        continue
+                    word = node.get('word') or {}
+                    value = word.get('words') or node.get('text')
+                    if value:
+                        summary_paragraphs.append(str(value))
+            opus_summary_text = ' '.join(summary_paragraphs)
+        if not opus_summary_text.strip():
+            opus_summary_text = str(opus_summary.get('text') or '')
+        if opus_summary_text.strip():
+            return opus_summary_text
         title = (modules.get('module_title') or {}).get('text') if isinstance(modules, dict) else ''
         return ' '.join(part for part in (title, desc.get('text') or '') if part)
 
@@ -667,7 +689,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         has_prize = any(
             word in normalized for word in (
-                '奖品', '礼盒', '礼包', '周边', '礼品', '红包', '元', '卡', '券',
+                '奖品', '礼盒', '礼包', '周边', '礼品', '红包', '现金', '元', '卡', '券',
                 '耳机', '键盘', '鼠标', '手机', '平板', '相机', '机械轴', '手办',
                 '模型', '盲盒', '零食', '年卡', '月卡', '兑换券', '兑换卡',
                 '资格', '门票', '同款', '套装', '礼盒', '抱枕', '挂件', '立牌',
@@ -676,6 +698,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 '本书', '一本', '书籍', '图书', '读物', '画册', '小说',
                 '袖珍书', '新书', '单行本', '绘本', '丛书', '漫画书',
                 'pocket', '支架', '电源', '充电', '显示器', '屏幕', '音箱', '音响',
+                '万年历', '面霜', '乳霜', 'C霜', '个性装扮', '装扮',
             )
         ) or bool(re.search(r'(?:送|赠|揪|抽|赢取|获得)[^\n]{0,40}[\*＊xX×]\s*\d+', normalized))
         # A product name in brackets after an explicit draw/gift verb is
@@ -686,13 +709,43 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 normalized,
                 re.I,
             ))
+        # Book titles are commonly written with 《》 after the draw verb and
+        # often follow a sentence break, which the generic unit rule cannot
+        # bridge. Keep the giveaway verb in the same expression so a book
+        # recommendation alone is not classified as a prize.
+        if not has_prize:
+            has_prize = bool(re.search(
+                r'(?:'
+                r'(?:揪|送出?|赠(?:送|予)?|赢取|领取|抽(?!空|到|了))[^\n]{0,45}《[^》]{1,50}》'
+                r'|《[^》]{1,50}》[^\n]{0,80}(?:揪|送出?|赠(?:送|予)?|赢取|领取|抽(?!空|到|了))'
+                r')',
+                normalized,
+            ))
         # A collection post often says "给up添加特别关注"; that inline
         # mention is not a call to perform a social action for this post.
         action_scope = re.sub(
             r'(?:给[^\n。！!；;]{0,20})?特别关注', '', normalized
         )
+        # "#转发抽奖#" / "#互动抽奖#" are topic tags, not instructions to
+        # perform an action. Remove complete hashtag tokens before deriving
+        # any of the engagement flags.
+        action_scope = re.sub(r'#[^#\n]{1,40}#', '', action_scope)
+        # Some official draws require only that the entrant is already a
+        # follower ("只要是我的粉丝都可以参与"). That is an explicit follow
+        # requirement even when the post never says the verb "关注".
+        follower_requirement = bool(re.search(
+            r'(?:只要|成为|是)[^。！!；;\n]{0,12}(?:我的|本喵的|up主?的)?粉丝'
+            r'[^。！!；;\n]{0,12}(?:参与|参加|抽奖)'
+            r'|粉丝[^。！!；;\n]{0,8}(?:才|即可|均可|都可以|都能)'
+            r'[^。！!；;\n]{0,8}(?:参与|参加|抽奖)',
+            action_scope,
+            re.I,
+        ))
         # Normalize spaced shorthand such as "关 + 赞 + 转 + 评".
         action_scope = re.sub(r'\s*[+＋]\s*', '+', action_scope)
+        # Keep a copy before emoji expansion. A standalone ⭐ in product copy
+        # is decorative unless it appears in an explicit participation block.
+        favorite_scope = action_scope
         # Bilibili creators frequently use emoji shorthand for the four
         # engagement actions: 🐷 follow, ❤️ like, ⭐️ favorite/collect, 💬 comment.
         action_scope = action_scope.replace('🐷', '关注').replace('❤️', '点赞').replace('⭐️', '收藏').replace('⭐', '收藏').replace('💬', '评论')
@@ -714,7 +767,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 action_scope,
             )
         )
-        has_action = direct_comment_prompt or any(
+        has_action = follower_requirement or direct_comment_prompt or any(
             word in action_scope for word in (
                 '关注', '转发', '评论', '留言', '点赞', '预约', '投币', '五连', '5️⃣连',
                 '三连', '3️⃣连', '4连', '四连', '卷管赞平', 'plq', '关转', '关+转', '关&转', '转评',
@@ -724,17 +777,26 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         result['has_prize'] = bool(has_prize)
         result['has_action'] = bool(has_action)
+        # Creators often mention completed earlier rounds in the same post as
+        # a live giveaway ("往期皆已开奖"). Those clauses describe history,
+        # not the status of the current draw.
+        result_scope = re.sub(
+            r'(?:往期|往届|历期|历届|上期|前几期|此前|之前的)'
+            r'[^。！!；;\n]{0,20}(?:已开奖|均已开奖|已抽奖|已送出|已发放|已寄出)',
+            '',
+            normalized,
+        )
         is_result_notice = (
-            any(word in normalized for word in result_words + past_result_words)
+            any(word in result_scope for word in result_words + past_result_words)
             or (
-                any(word in normalized for word in report_context_words)
+                any(word in result_scope for word in report_context_words)
                 and not has_action
             )
             or (
-                '开奖' in normalized
-                and any(word in normalized for word in ('名单', '结果'))
+                '开奖' in result_scope
+                and any(word in result_scope for word in ('名单', '结果'))
                 and not has_action
-                and any(word in normalized for word in ('已公布', '已开奖', '结果如下', '名单如下'))
+                and any(word in result_scope for word in ('已公布', '已开奖', '结果如下', '名单如下'))
             )
         )
         if is_result_notice:
@@ -803,7 +865,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             result.update(kind='suspected_giveaway', reason='missing_prize')
             return result
 
-        action_text = normalized.replace('&', '').replace('＋', '').replace('+', '')
+        action_text = action_scope.replace('&', '').replace('＋', '').replace('+', '')
         action_words = ('关注', '转发', '评论', '留言', '点赞', '预约', '参与', '@', '关+', '关转', '转')
         action_aliases = (
             '转赞评', '关转赞评', '关转评', '转评', '评论抽',
@@ -811,38 +873,39 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
 
         four_lian = any(
-            phrase in normalized for phrase in (
+            phrase in action_scope for phrase in (
                 '4连', '四连', '卷管赞平4连', '转关赞评',
                 '关转赞评', '转赞评',
             )
         )
         compact_actions = (
             four_lian
-            or '关转赞评' in normalized
-            or '转赞评' in normalized
-            or '关转评' in normalized
-            or '关&转&赞&评' in normalized
+            or '关转赞评' in action_scope
+            or '转赞评' in action_scope
+            or '关转评' in action_scope
+            or '转关评' in action_scope
+            or '关&转&赞&评' in action_scope
             or '关+赞+转+评' in action_scope.replace('＋', '+')
             or '关+赞' in action_scope.replace('＋', '+')
             or '转+评' in action_scope.replace('＋', '+')
         )
         has_forward = (
             compact_actions
-            or '转发' in normalized
+            or '转发' in action_scope
             or '转' in action_text
             or '转赞评' in action_text
             or '转评' in action_text
             or '关转评' in action_text
-            or '关转评' in normalized
-            or '关+转' in normalized
+            or '关转评' in action_scope
+            or '关+转' in action_scope
             or '关+转' in action_text
             or '关+赞' in action_text
             or '转+评' in action_text
             or '关+赞+转+评' in action_scope.replace('＋', '+')
             or '关+赞' in action_scope.replace('＋', '+')
             or '转+评' in action_scope.replace('＋', '+')
-            or '5️⃣连' in normalized
-            or '五连' in normalized
+            or '5️⃣连' in action_scope
+            or '五连' in action_scope
         )
         # "评论区" is discussion context, not an action by itself. Require an
         # explicit comment verb; "plq" is the common Bilibili abbreviation.
@@ -861,53 +924,50 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             )
         has_follow = (
             four_lian
-            or '关注' in normalized
+            or follower_requirement
             or '关注' in action_scope
             or '关' in action_text
-            or '关转评' in normalized
-            or '关+转' in normalized
+            or '关转评' in action_scope
+            or '关+转' in action_scope
         )
         # A bare "赞" in unrelated product copy must not count as engagement.
         has_like = (
             four_lian
-            or '点赞' in normalized
             or '点赞' in action_scope
-            or '赞' in normalized
             or '赞' in action_text
-            or '赞' in normalized
-            or '5️⃣连' in normalized
-            or '五连' in normalized
+            or '5️⃣连' in action_scope
+            or '五连' in action_scope
         )
         # Bilibili shorthand uses "三连" for like+comment+forward. When the
         # post spells out a three-action set (点赞/评论/转发), treat it the
         # same way instead of silently omitting the favorite-style component.
         if (
-            ('点赞' in normalized or '赞' in action_text)
-            and ('评论' in normalized or '留言' in normalized)
-            and ('转发' in normalized or '转' in action_text)
+            ('点赞' in action_scope or '赞' in action_text)
+            and ('评论' in action_scope or '留言' in action_scope)
+            and ('转发' in action_scope or '转' in action_text)
         ):
             has_three_lian = True
         else:
-            has_three_lian = '三连' in normalized or '3️⃣连' in normalized
-        has_five_lian = '五连' in normalized or '5️⃣连' in normalized
+            has_three_lian = '三连' in action_scope or '3️⃣连' in action_scope
+        has_five_lian = '五连' in action_scope or '5️⃣连' in action_scope
         star_in_action_context = bool(re.search(
             r'(?:参与方式|参与条件|参与步骤)[^\n]{0,60}[⭐️⭐]',
-            normalized,
+            favorite_scope,
         ))
         has_favorite = (
             has_five_lian
             or star_in_action_context
             or bool(re.search(
                 r'(?:点赞[、,+＆&和与及]*)?收藏[、,+＆&和与及]*(?:转发|评论|点赞|转|评)',
-                normalized,
+                favorite_scope,
             ))
             or bool(re.search(
                 r'收藏[^\n]{0,12}(?:本条|本动态|此动态|动态|参与)',
-                normalized,
+                favorite_scope,
             ))
             or bool(re.search(
                 r'(?:怎么报名|报名方式|参与方式|参与条件|参与步骤)[^\n]{0,80}收藏',
-                normalized,
+                favorite_scope,
             ))
         )
         if has_three_lian:
@@ -920,7 +980,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             has_comment = True
             has_favorite = True
             has_forward = True
-        has_reserve = '预约' in normalized
+        has_reserve = '预约' in action_scope
         has_coin = '投币' in action_scope
         if has_reserve:
             action = 'reserve'
@@ -955,9 +1015,35 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             reason='verified_text_rules',
             has_prize=bool(has_prize),
             has_action=bool(required_actions),
-            action_certainty='implicit' if ('抽取' in normalized or '赠送' in normalized or '赢取' in normalized) and not any(word in normalized for word in ('关注', '点赞', '评论', '留言', '转发', '五连', '三连')) else 'explicit',
+            action_certainty='implicit' if ('抽取' in normalized or '赠送' in normalized or '赢取' in normalized) and not any(word in action_scope for word in ('关注', '点赞', '评论', '留言', '转发', '五连', '三连')) else 'explicit',
         )
         return result
+
+    @staticmethod
+    def _extract_official_lottery_id(item):
+        """Return a lottery id embedded in the dynamic detail payload."""
+        if not isinstance(item, dict):
+            return ''
+
+        def walk(value, depth=0):
+            if depth > 8:
+                return ''
+            if isinstance(value, dict):
+                lottery_id = value.get('lottery_id')
+                if lottery_id is not None and str(lottery_id).strip():
+                    return str(lottery_id).strip()
+                for child in value.values():
+                    found = walk(child, depth + 1)
+                    if found:
+                        return found
+            elif isinstance(value, list):
+                for child in value:
+                    found = walk(child, depth + 1)
+                    if found:
+                        return found
+            return ''
+
+        return walk(item)
 
     @staticmethod
     def _has_official_lottery_component(item):
@@ -1289,35 +1375,37 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 'lottery_rule': classification,
             }
         has_official_component = self._has_official_lottery_component(item)
+        if isinstance(item, dict) and classification.get('confirmed'):
+            # Explicit text rules are executable even when the dynamic also
+            # exposes an official component. This avoids spurious -9999
+            # failures from lottery_notice and still preserves the verified
+            # action set for the executor.
+            self.lottery_source = 'plain_text'
+            text_deadline = self._parse_plain_text_deadline(
+                classification.get('text') or '',
+                now=self._publish_time_from_item(item),
+            )
+            try:
+                metadata = self.get_dynamic_time_metadata(bro)
+            except Exception:
+                metadata = {}
+            official_end_ts = metadata.get('lottery_end_ts')
+            plain_text_deadline = (
+                self._notice_datetime(official_end_ts)
+                if official_end_ts
+                else text_deadline
+            )
+            return {
+                'confirmed': True,
+                'retryable': False,
+                'reason': '',
+                'source': 'plain_text',
+                'lottery_rule': classification,
+                'lottery_id': self._extract_official_lottery_id(item),
+                'lottery_end_time': plain_text_deadline,
+                'status': None,
+            }
         if isinstance(item, dict) and not has_official_component:
-            if classification.get('confirmed'):
-                self.lottery_source = 'plain_text'
-                text_deadline = self._parse_plain_text_deadline(
-                    classification.get('text') or '',
-                    now=self._publish_time_from_item(item),
-                )
-                # Official lottery metadata can be present even when the
-                # button node is not exposed. It is authoritative for expiry.
-                try:
-                    metadata = self.get_dynamic_time_metadata(bro)
-                except Exception:
-                    metadata = {}
-                official_end_ts = metadata.get('lottery_end_ts')
-                plain_text_deadline = (
-                    self._notice_datetime(official_end_ts)
-                    if official_end_ts
-                    else text_deadline
-                )
-                return {
-                    'confirmed': True,
-                    'retryable': False,
-                    'reason': '',
-                    'source': 'plain_text',
-                    'lottery_rule': classification,
-                    'lottery_id': '',
-                    'lottery_end_time': plain_text_deadline,
-                    'status': None,
-                }
             if classification.get('kind') == 'suspected_giveaway':
                 # We have enough text to know it may be a giveaway, but the
                 # rule is incomplete. Querying the official endpoint cannot

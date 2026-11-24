@@ -7,7 +7,7 @@ from datetime import datetime
 from datetime import timezone
 from datetime import timedelta
 from datetime import time as datetime_time
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
@@ -79,6 +79,71 @@ class DynamicShareBase(object):
           })
           .catch(error => {
             finish({error: String(error)});
+          });
+    '''
+
+    OWN_FEED_API_TEMPLATE = (
+        'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space'
+        '?host_mid=%s&offset=%s&timezone_offset=-480&features=itemOpusStyle'
+    )
+    OWN_FEED_SCRIPT = r'''
+        const endpoint = arguments[0];
+        const done = arguments[1];
+        const timer = setTimeout(() => done({timeout: true}), 15000);
+        function textFromDynamic(moduleDynamic) {
+          const parts = [];
+          const desc = moduleDynamic && moduleDynamic.desc || {};
+          for (const node of (desc.rich_text_nodes || [])) {
+            if (node && node.text) parts.push(String(node.text));
+          }
+          for (const paragraph of (desc.paragraphs || [])) {
+            const nodes = (((paragraph || {}).text || {}).nodes || []);
+            for (const node of nodes) {
+              const word = (node || {}).word || {};
+              if (word.words || (node || {}).text) {
+                parts.push(String(word.words || node.text));
+              }
+            }
+          }
+          if (desc.text) parts.push(String(desc.text));
+          return parts.join(' ');
+        }
+        fetch(endpoint, {credentials: 'include'})
+          .then(async response => {
+            const raw = await response.text();
+            let payload;
+            try { payload = JSON.parse(raw); }
+            catch (error) {
+              clearTimeout(timer);
+              done({invalid_json: true, status: response.status, raw: raw.slice(0, 300)});
+              return;
+            }
+            clearTimeout(timer);
+            const data = payload.data || {};
+            const items = (data.items || []).map(item => {
+              const original = item.orig || {};
+              const modules = item.modules || {};
+              const originalModules = original.modules || {};
+              return {
+                id: String(item.id_str || item.id || ''),
+                type: item.type || '',
+                orig_id: String(original.id_str || original.id || ''),
+                orig_type: original.type || '',
+                text: textFromDynamic(modules.module_dynamic || {}),
+                orig_text: textFromDynamic(originalModules.module_dynamic || {}),
+              };
+            });
+            done({
+              code: payload.code,
+              message: payload.message || '',
+              items: items,
+              has_more: Boolean(data.has_more),
+              offset: String(data.offset || ''),
+            });
+          })
+          .catch(error => {
+            clearTimeout(timer);
+            done({error: String(error)});
           });
     '''
 
@@ -2018,6 +2083,68 @@ if (comments) comments.scrollIntoView({block: 'center'});
             body = body[comment_marker.start():]
         return any(line.strip() == user_name for line in body.splitlines())
 
+    @staticmethod
+    def _forward_fingerprint_windows(original_text):
+        fingerprints = original_text if isinstance(original_text, (tuple, list)) else [original_text]
+        windows = set()
+        for fingerprint in fingerprints:
+            normalized = re.sub(
+                r'[^0-9a-z\u4e00-\u9fff]+', '',
+                str(fingerprint or '').lower(),
+            )
+            if len(normalized) < 15:
+                continue
+            windows.update(
+                normalized[index:index + 15]
+                for index in range(len(normalized) - 14)
+            )
+        return windows
+
+    @staticmethod
+    def _forward_text_matches(text, fingerprint_windows):
+        normalized = re.sub(
+            r'[^0-9a-z\u4e00-\u9fff]+', '',
+            str(text or '').lower(),
+        )
+        return any(fragment in normalized for fragment in fingerprint_windows)
+
+    def _find_forward_in_own_feed(self, bro, dynamic_id, fingerprint_windows, pages=2):
+        offset = ''
+        for _ in range(max(1, int(pages))):
+            endpoint = self.OWN_FEED_API_TEMPLATE % (
+                self.user_id,
+                quote(str(offset), safe=''),
+            )
+            result = bro.execute_async_script(self.OWN_FEED_SCRIPT, endpoint)
+            if not isinstance(result, dict):
+                return None
+            if result.get('timeout') or result.get('error') or result.get('invalid_json'):
+                return None
+            if result.get('code') != 0:
+                return None
+            items = result.get('items')
+            if not isinstance(items, list) or not items:
+                return None
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get('orig_id') or '') == str(dynamic_id):
+                    return True
+                if self._forward_text_matches(
+                    (str(item.get('text') or '') + ' ' + str(item.get('orig_text') or '')),
+                    fingerprint_windows,
+                ):
+                    return True
+            next_offset = str(result.get('offset') or '')
+            if (
+                not result.get('has_more')
+                or not next_offset
+                or next_offset == offset
+            ):
+                return False
+            offset = next_offset
+        return False
+
     def is_already_forwarded(self, bro, current_url=None, original_text=''):
         buttons = self.get_visible_elements(bro, self.FORWARD_CSS)
         for button in buttons:
@@ -2039,6 +2166,12 @@ if (comments) comments.scrollIntoView({block: 'center'});
             return False
         dynamic_id = match.group(1)
         original_url = current_url
+        fingerprint_windows = self._forward_fingerprint_windows(original_text)
+        api_result = self._find_forward_in_own_feed(
+            bro, dynamic_id, fingerprint_windows, pages=2
+        )
+        if api_result is not None:
+            return api_result
         try:
             space_url = 'https://space.bilibili.com/%s/dynamic' % self.user_id
             bro.get(space_url)
@@ -2049,18 +2182,7 @@ if (comments) comments.scrollIntoView({block: 'center'});
             deadline = time.monotonic() + float(self.forward_confirm_timeout_seconds)
             reloaded = False
             fingerprints = original_text if isinstance(original_text, (tuple, list)) else [original_text]
-            fingerprint_windows = set()
-            for fingerprint in fingerprints:
-                normalized = re.sub(
-                    r'[^0-9a-z\u4e00-\u9fff]+', '',
-                    str(fingerprint or '').lower(),
-                )
-                if len(normalized) < 15:
-                    continue
-                fingerprint_windows.update(
-                    normalized[index:index + 15]
-                    for index in range(len(normalized) - 14)
-                )
+            fingerprint_windows = self._forward_fingerprint_windows(original_text)
             started = time.monotonic()
             while time.monotonic() < deadline:
                 cards = self.get_visible_elements(bro, '.bili-dyn-item')

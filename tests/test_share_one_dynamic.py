@@ -14,6 +14,62 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIn('.side-toolbar__action.like', DynamicShareBase.LIKE_CSS)
         self.assertIn('.side-toolbar__action.forward', DynamicShareBase.FORWARD_CSS)
 
+    def test_forward_detection_uses_own_feed_orig_id(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1254184047385509893'
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'items': [{'orig_id': '1254184047385509893', 'text': '转发内容'}],
+            'has_more': False,
+            'offset': '',
+        }
+        share.get_visible_elements = Mock(return_value=[])
+        self.assertTrue(
+            share.is_already_forwarded(
+                browser, 'https://www.bilibili.com/opus/1254184047385509893'
+            )
+        )
+
+    def test_forward_detection_allows_first_repost_when_own_feed_has_no_match(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1254184047385509893'
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'items': [{'orig_id': '1270000000000000001', 'text': '其他转发'}],
+            'has_more': False,
+            'offset': '',
+        }
+        share.get_visible_elements = Mock(return_value=[])
+        self.assertIs(
+            share.is_already_forwarded(
+                browser, 'https://www.bilibili.com/opus/1254184047385509893'
+            ),
+            False,
+        )
+
+    def test_forward_detection_falls_back_to_dom_when_own_feed_api_fails(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1254184047385509893'
+        browser.execute_async_script.return_value = {'code': -352, 'message': '-352'}
+        browser.execute_script.return_value = 'complete'
+        card = Mock()
+        card.get_attribute.side_effect = lambda name: (
+            '1254184047385509893' if name == 'outerHTML' else ''
+        )
+        card.find_elements.return_value = []
+        share.get_visible_elements = Mock(side_effect=[[], [card]])
+        self.assertTrue(
+            share.is_already_forwarded(
+                browser, 'https://www.bilibili.com/opus/1254184047385509893'
+            )
+        )
+
     def test_forward_detection_checks_own_dynamic_feed_by_referenced_id(self):
         share = DynamicShareBase()
         share.user_id = '35549700'

@@ -65,6 +65,7 @@ services:
       - .env
       - .env.runtime
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       DB_HOST: bili-db
       PORT: "3306"
       SELENIUM_URL: http://bili-selenium:4444

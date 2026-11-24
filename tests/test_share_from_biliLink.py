@@ -8,7 +8,7 @@ from utils import globals
 
 
 class BiliLinkShareTests(unittest.TestCase):
-    def build_service(self, url='https://www.bilibili.com/opus/123'):
+    def build_service(self, url='https://www.bilibili.com/opus/1270000000000000001'):
         service = BiliLinkShare.__new__(BiliLinkShare)
         service.user_id = '35549700'
         service.bro = Mock()
@@ -56,6 +56,33 @@ class BiliLinkShareTests(unittest.TestCase):
 
         self.assertEqual(rows, [{'dyn_url': 'ready'}])
         service.lottery_ready_dao.query_ready.assert_called_once_with(limit=20, user_id='35549700')
+
+    def test_historical_dynamic_is_not_executed_as_a_lottery(self):
+        service = self.build_service()
+        service.get_today_dynamic_links.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1249999999999999999'}
+        ]
+        # The filter must run before any browser/login/social work.
+        service.owns_browser = True
+        service.bro = None
+        with patch(
+            'service.share_service.share_from_biliLink.init_webdriver'
+        ) as webdriver, patch(
+            'service.share_service.share_from_biliLink.LoginService'
+        ) as login, patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase'
+        ) as dynamic_share:
+            service.do_share_by_links()
+
+        webdriver.assert_not_called()
+        login.assert_not_called()
+        dynamic_share.assert_not_called()
+        service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1249999999999999999', status=4
+        )
+        service.lottery_ready_dao.delete_by_url.assert_called_once_with(
+            'https://www.bilibili.com/opus/1249999999999999999'
+        )
 
     def test_verified_queue_starts_browser_before_login(self):
         service = self.build_service()
@@ -114,7 +141,7 @@ class BiliLinkShareTests(unittest.TestCase):
     def test_missing_up_info_does_not_write_none_follow_record(self):
         service = self.build_service()
         service.get_today_dynamic_links.return_value = [{
-            'dyn_url': 'https://www.bilibili.com/opus/123',
+            'dyn_url': 'https://www.bilibili.com/opus/1270000000000000001',
         }]
         service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
         login = Mock()
@@ -147,7 +174,7 @@ class BiliLinkShareTests(unittest.TestCase):
     def test_successful_share_records_result(self):
         service = self.build_service()
         service.get_today_dynamic_links.return_value = [{
-            'dyn_url': 'https://www.bilibili.com/opus/123',
+            'dyn_url': 'https://www.bilibili.com/opus/1270000000000000001',
             'lottery_end_time': '2026-11-25 20:00:00',
         }]
         service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
@@ -177,12 +204,12 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
-            url='https://www.bilibili.com/opus/123', status=1
+            url='https://www.bilibili.com/opus/1270000000000000001', status=1
         )
         dynamic.share_one.assert_called_once_with(
             service.bro,
             service.chains,
-            'https://www.bilibili.com/opus/123',
+            'https://www.bilibili.com/opus/1270000000000000001',
             'share',
             'comment',
             lottery_end_time='2026-11-25 20:00:00',
@@ -192,7 +219,7 @@ class BiliLinkShareTests(unittest.TestCase):
         )
         service.share_info_dao.insert_shareInfo.assert_called_once_with(dynamic)
         service.draw_dynamic_dao.mark_shared_by_dynamic_id.assert_called_once_with(
-            'https://www.bilibili.com/opus/123', '35549700'
+            'https://www.bilibili.com/opus/1270000000000000001', '35549700'
         )
         service.follow_up_dao.saverUpdate.assert_called_once_with(
             '456', 'https://space.bilibili.com/456', '35549700'
@@ -281,7 +308,7 @@ class BiliLinkShareTests(unittest.TestCase):
         service.owns_browser = True
         service.statistics_dao = Mock()
         service.get_today_dynamic_links = Mock(return_value=[
-            {'dyn_url': 'https://www.bilibili.com/opus/123'}
+            {'dyn_url': 'https://www.bilibili.com/opus/1270000000000000001'}
         ])
         service.get_ignore_link = Mock(return_value=[])
         service.share_info_dao = Mock()
@@ -332,7 +359,7 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.lottery_ready_dao.delete_by_url.assert_called_once_with(
-            'https://www.bilibili.com/opus/123'
+            'https://www.bilibili.com/opus/1270000000000000001'
         )
 
     def test_expired_dynamic_is_removed_from_pending_queue(self):
@@ -361,7 +388,7 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
-            url='https://www.bilibili.com/opus/123', status=2
+            url='https://www.bilibili.com/opus/1270000000000000001', status=2
         )
         service.share_info_dao.insert_shareInfo.assert_not_called()
 
@@ -391,7 +418,7 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
-            url='https://www.bilibili.com/opus/123', status=4
+            url='https://www.bilibili.com/opus/1270000000000000001', status=4
         )
         service.share_info_dao.insert_shareInfo.assert_not_called()
 
@@ -422,7 +449,7 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
-            url='https://www.bilibili.com/opus/123', status=0
+            url='https://www.bilibili.com/opus/1270000000000000001', status=0
         )
         service.share_info_dao.insert_shareInfo.assert_not_called()
 
@@ -441,7 +468,7 @@ class BiliLinkShareTests(unittest.TestCase):
             service.do_share_by_links()
 
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
-            url='https://www.bilibili.com/opus/123', status=1
+            url='https://www.bilibili.com/opus/1270000000000000001', status=1
         )
         dynamic_share.assert_not_called()
 

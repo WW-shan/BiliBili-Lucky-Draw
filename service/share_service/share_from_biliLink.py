@@ -25,6 +25,8 @@ mylogger = MyLogger('share_from_biliLick.py').getLogger()
 
 
 class BiliLinkShare(object):
+    MIN_CURRENT_DYNAMIC_ID = 1_250_000_000_000_000_000
+
     def __init__(self, user_id, bro=None, chains=None):
         db = init_db()
         self.share_note = ""
@@ -42,18 +44,40 @@ class BiliLinkShare(object):
     def do_share_by_links(self):
         do_share_cnt = 0
         success_share_cnt = 0
-        break_flag = 0
         try:
             datas = self.get_today_dynamic_links()
             if not datas:
-                # Verification and action batches run at different intervals.
-                # If the verifier just marked rows status 5, retry the action
-                # queue once before ending the cycle so it does not sit idle
-                # until the next 5-minute tick.
                 datas = self.get_today_dynamic_links()
             if not datas:
                 mylogger.info('暂无已确认的抽奖，跳过本轮转发')
                 return
+
+            # Filter stale IDs before creating a browser session. A historic
+            # post cannot be made safe merely by having a stale lottery rule.
+            ignore_links = self.get_ignore_link()
+            filtered_datas = []
+            for data in datas:
+                lucky_dynamic_url = remove_query_string(data['dyn_url'])
+                try:
+                    dynamic_id = int(re.search(r'/(\d+)(?:\?|$)', lucky_dynamic_url).group(1))
+                except (AttributeError, TypeError, ValueError):
+                    self.draw_dynamic_dao.update_sharedUrl(
+                        url=lucky_dynamic_url, status=3
+                    )
+                    continue
+                if dynamic_id < self.MIN_CURRENT_DYNAMIC_ID:
+                    self.draw_dynamic_dao.update_sharedUrl(
+                        url=lucky_dynamic_url, status=4
+                    )
+                    self.lottery_ready_dao.delete_by_url(lucky_dynamic_url)
+                    mylogger.warning('跳过过期/历史动态，不执行抽奖：%s', lucky_dynamic_url)
+                    continue
+                filtered_datas.append(data)
+            datas = filtered_datas
+            if not datas:
+                mylogger.info('本轮没有现代动态ID，跳过登录与执行')
+                return
+
             if self.owns_browser and self.bro is None:
                 self.bro, self.chains = init_webdriver()
             login_service = LoginService(self.bro, self.chains, self.user_id)
@@ -65,23 +89,20 @@ class BiliLinkShare(object):
                 )
                 self.user_id = authenticated_uid
             login_service.ensure_publish_cookie()
-            ignore_links = self.get_ignore_link()
+
             for data in datas:
                 lucky_dynamic_url = remove_query_string(data['dyn_url'])
-                # lucky_dynamic_url = 'https://www.bilibili.com/opus/886341319897645089'
-                for ign_lnk in ignore_links:
-                    if ign_lnk in lucky_dynamic_url:
-                        break_flag = 1
-                # 跳过已经转发过的
-                if break_flag == 1:
-                    break_flag = 0
+                if any(ign_lnk in lucky_dynamic_url for ign_lnk in ignore_links):
                     continue
-                break_flag = 0
-                shared = self.share_info_dao.query_shareInfo_by_shareUrl(lucky_dynamic_url, self.user_id)
+                shared = self.share_info_dao.query_shareInfo_by_shareUrl(
+                    lucky_dynamic_url, self.user_id
+                )
                 if len(shared) != 0:
-                    self.draw_dynamic_dao.update_sharedUrl(url=lucky_dynamic_url, status=1)
+                    self.draw_dynamic_dao.update_sharedUrl(
+                        url=lucky_dynamic_url, status=1
+                    )
                     continue
-                do_share_cnt = do_share_cnt + 1
+                do_share_cnt += 1
                 if do_share_cnt > 1:
                     random_sleep(start=20, end=30)
                 dyn = DynamicShareBase()
@@ -104,9 +125,6 @@ class BiliLinkShare(object):
                             'B站安全风控（%s），已停止自动转发：%s'
                             % (evidence, lucky_dynamic_url)
                         )
-                    # A stale t.bilibili.com shell can temporarily omit author
-                    # metadata. Retry the same dynamic once on the canonical
-                    # opus URL before putting it back into verification.
                     if '未能从动态标题解析UP主UID' in str(dyn.last_error):
                         canonical_url = self._canonical_opus_url(lucky_dynamic_url)
                         if canonical_url and canonical_url != lucky_dynamic_url:
@@ -143,8 +161,6 @@ class BiliLinkShare(object):
                     self.draw_dynamic_dao.update_sharedUrl(
                         url=lucky_dynamic_url, status=2
                     )
-                    # Remove the stale rule so the continuous ready queue cannot
-                    # select the same expired dynamic again on the next tick.
                     self.lottery_ready_dao.delete_by_url(lucky_dynamic_url)
                     continue
                 if dyn.share_status == 4:
@@ -152,15 +168,11 @@ class BiliLinkShare(object):
                         url=lucky_dynamic_url, status=4
                     )
                     continue
-                # 保存转发状态和关注的up主信息
                 if dyn.share_status == 0:
-                    self.draw_dynamic_dao.update_sharedUrl(url=lucky_dynamic_url, status=1)
+                    self.draw_dynamic_dao.update_sharedUrl(
+                        url=lucky_dynamic_url, status=1
+                    )
                     self.share_info_dao.insert_shareInfo(dyn)
-                    # A successful action may have run through the opus form
-                    # while another row still holds the t.bilibili.com form.
-                    # Reconcile all forms by dynamic id after the share record
-                    # exists, otherwise stale pending/expired rows can trigger
-                    # a duplicate action later.
                     self.draw_dynamic_dao.mark_shared_by_dynamic_id(
                         lucky_dynamic_url, self.user_id
                     )
@@ -173,9 +185,13 @@ class BiliLinkShare(object):
                             '参与成功但未解析到UP信息，跳过关注记录写入：%s',
                             lucky_dynamic_url,
                         )
-                    success_share_cnt = success_share_cnt + 1
+                    success_share_cnt += 1
                 else:
-                    mylogger.warning('单条动态返回未知状态 %s：%s', dyn.share_status, lucky_dynamic_url)
+                    mylogger.warning(
+                        '单条动态返回未知状态 %s：%s',
+                        dyn.share_status,
+                        lucky_dynamic_url,
+                    )
                     self.draw_dynamic_dao.update_sharedUrl(
                         url=lucky_dynamic_url, status=3
                     )
@@ -184,20 +200,17 @@ class BiliLinkShare(object):
         except Exception:
             mylogger.error("[do_share_by_links 根据url转发动态出错]", exc_info=True)
         finally:
-            if do_share_cnt == 0:
-                percentage = 0
-            else:
-                percentage = (success_share_cnt / do_share_cnt) * 100
+            percentage = (success_share_cnt / do_share_cnt) * 100 if do_share_cnt else 0
             succ_percentage = f"成功率为 : {percentage:.2f}%"
             content = " 成功的转发条数为：" + str(success_share_cnt) + ";" + succ_percentage
             if 50 > percentage > 0:
-                NotifyService().fangtang_msg_push_by_content(title="程序预警，需要处理！", content=content)
+                NotifyService().fangtang_msg_push_by_content(
+                    title="程序预警，需要处理！", content=content
+                )
             try:
                 self.statistics_dao.insert(self.user_id, content, "")
             except Exception:
                 mylogger.error('写入转发统计失败', exc_info=True)
-            # 暂时停止移除
-            # RemoveMsgService(self.user_id, success_share_cnt, bro=self.bro, chains=self.chains).do_remove()
             if self.owns_browser and self.bro is not None:
                 try:
                     self.bro.quit()

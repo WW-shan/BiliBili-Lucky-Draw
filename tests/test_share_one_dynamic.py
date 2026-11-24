@@ -675,7 +675,49 @@ class ShareOneDynamicTests(unittest.TestCase):
         ]}}}}
         result = DynamicShareBase.classify_lottery_item(item)
         self.assertTrue(result['confirmed'])
-        self.assertEqual(result['required_actions'], ['comment', 'like', 'forward'])
+        self.assertEqual(
+            sorted(result['required_actions']),
+            sorted(['follow', 'comment', 'like', 'favorite', 'forward']),
+        )
+
+    def test_explicit_collect_in_participation_steps_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '怎么报名：关注 + 点赞 + 收藏 + 评论「想当体验官」，12.05随机抽1位。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertIn('favorite', result['required_actions'])
+
+    def test_product_star_copy_does_not_add_favorite_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '来京东购机赠YOYO钉扣表带套装哦~⭐ '
+                '关注+一键三连本条抽粉丝送OPPO数据线'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        self.assertNotIn('favorite', result['required_actions'])
+
+    def test_deadline_after_draw_keyword_wins_over_other_date(self):
+        text = (
+            '开奖时间：12月30号\n'
+            '参与需求：关注，评论转发本条帖子\n'
+            '主页还有抽键盘的贴子 12月1号开奖'
+        )
+        result = DynamicShareBase._parse_plain_text_deadline(
+            text, now=datetime(2026, 11, 25)
+        )
+        self.assertEqual(result, '2026-12-30 23:59:00')
+
+    def test_spaced_chinese_month_day_deadline(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '12 月 5 日将会抽取 1 位幸运儿',
+            now=datetime(2026, 11, 25),
+        )
+        self.assertEqual(result, '2026-12-05 23:59:00')
 
     def test_plq_comment_abbreviation_is_parsed_as_comment(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
@@ -1096,6 +1138,27 @@ class ShareOneDynamicTests(unittest.TestCase):
         with patch.object(share, 'get_visible_message_text', return_value=''):
             with self.assertRaises(TimeoutException):
                 share.wait_share_success(browser, timeout=1)
+
+    def test_comment_is_not_reported_successful_without_confirmation(self):
+        share = DynamicShareBase()
+        browser = Mock()
+        browser.execute_script.return_value = True
+        share.wait_css = Mock(return_value=Mock())
+        share.find_comment_editor = Mock(return_value=Mock())
+        share.click_by_js = Mock()
+        share.has_current_user_comment = Mock(return_value=False)
+
+        with patch(
+            'service.share_service.share_one_dynamic.WebDriverWait'
+        ) as wait, patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            wait.return_value.until.side_effect = [
+                Mock(),
+                TimeoutException('comment not visible'),
+            ]
+            with self.assertRaisesRegex(Exception, '评论提交后未确认'):
+                share.commit_comment(browser, Mock(), 'hello')
 
     def test_comment_editor_timeout_marks_participation_incomplete(self):
         share = DynamicShareBase()

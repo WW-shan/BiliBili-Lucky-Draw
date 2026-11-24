@@ -689,23 +689,33 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             or '5️⃣连' in normalized
             or '五连' in normalized
         )
+        has_three_lian = '三连' in normalized or '3️⃣连' in normalized
+        has_five_lian = '五连' in normalized or '5️⃣连' in normalized
+        star_in_action_context = bool(re.search(
+            r'(?:参与方式|参与条件|参与步骤)[^\n]{0,60}[⭐️⭐]',
+            normalized,
+        ))
         has_favorite = (
-            '⭐️' in normalized
-            or '⭐' in normalized
+            has_five_lian
+            or star_in_action_context
             or bool(re.search(
                 r'收藏[^\n]{0,12}(?:本条|本动态|此动态|动态|参与)',
                 normalized,
             ))
+            or bool(re.search(
+                r'(?:怎么报名|报名方式|参与方式|参与条件|参与步骤)[^\n]{0,80}收藏',
+                normalized,
+            ))
         )
-        has_three_lian = '三连' in normalized or '3️⃣连' in normalized
-        has_five_lian = '五连' in normalized or '5️⃣连' in normalized
         if has_three_lian:
             has_like = True
             has_comment = True
             has_forward = True
         if has_five_lian:
+            has_follow = True
             has_like = True
             has_comment = True
+            has_favorite = True
             has_forward = True
         has_reserve = '预约' in normalized
         if has_reserve:
@@ -938,12 +948,41 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 pass
         # Prefer a date near the opening / draw wording, and require a time or
         # an explicit "开奖" marker so unrelated dates are not used.
+        # A date immediately after explicit draw/deadline wording is the
+        # strongest signal; match it before scanning unrelated dates.
+        keyword_date = re.search(
+            r'(?:开奖|抽奖|截止)(?:时间|日期)?\s*[:：]?\s*'
+            r'(?:(?P<year>20\d{2})年)?\s*'
+            r'(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?'
+            r'(?:\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*'
+            r'(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?)?',
+            normalized,
+        )
+        if keyword_date:
+            groups = keyword_date.groupdict()
+            month = int(groups['month'])
+            day = int(groups['day'])
+            hour = int(groups['hour']) if groups.get('hour') else 23
+            minute = int(groups['minute'] or 0) if groups.get('minute') else 59
+            period = groups.get('period') or ''
+            if ('下午' in period or '晚上' in period) and hour < 12:
+                hour += 12
+            elif '凌晨' in period and hour == 12:
+                hour = 0
+            year = int(groups['year']) if groups.get('year') else current.year
+            try:
+                deadline = datetime(year, month, day, hour, minute, tzinfo=SHANGHAI_TZ)
+                if deadline < current - timedelta(days=30):
+                    deadline = deadline.replace(year=year + 1)
+                return str(deadline.replace(tzinfo=None))
+            except (TypeError, ValueError, OverflowError):
+                pass
         patterns = (
-            r'(?:(?P<year>20\d{2})年)?\s*(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
-            r'(?P<month>\d{1,2})[./](?P<day>\d{1,2})[日号]?\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
-            r'(?:(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]?)(?=[^\n]{0,60}(?:开奖|抽取|截止|揪\d|抽\d|[0-9]+个))',
-            r'(?:(?P<month>\d{1,2})[/.-](?P<day>\d{1,2})[日号]?)(?=[^\n]{0,40}(?:开奖|抽取|截止|抱走|抽\d|[0-9]+个))',
-            r'(?:开奖|抽奖|截止)(?:时间|日期)?\s*[:：]?\s*(?P<month>\d{1,2})[./](?P<day>\d{1,2})[日号]?',
+            r'(?:(?P<year>20\d{2})年)?\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
+            r'(?P<month>\d{1,2})[./]\s*(?P<day>\d{1,2})\s*[日号]?\s*(?P<period>上午|下午|晚上|凌晨|中午)?\s*(?P<hour>\d{1,2})[:点](?P<minute>\d{2})?',
+            r'(?:(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*[日号]?)(?=[^\n]{0,60}(?:开奖|抽取|截止|揪\d|抽\d|[0-9]+个))',
+            r'(?:(?P<month>\d{1,2})\s*[/.-]\s*(?P<day>\d{1,2})\s*[日号]?)(?=[^\n]{0,40}(?:开奖|抽取|截止|抱走|抽\d|[0-9]+个))',
+            r'(?:开奖|抽奖|截止)(?:时间|日期)?\s*[:：]?\s*(?P<month>\d{1,2})[./]\s*(?P<day>\d{1,2})\s*[日号]?',
         )
         for pattern in patterns:
             for match in re.finditer(pattern, normalized):
@@ -2137,9 +2176,14 @@ return walk(document);
             if not ok:
                 raise Exception("未找到评论发布按钮")
             try:
-                WebDriverWait(bro, 3).until(lambda driver: self.has_current_user_comment(driver))
-            except TimeoutException:
-                mylogger.info("评论已提交，评论列表尚未刷新，继续转发")
+                WebDriverWait(bro, 15).until(
+                    lambda driver: self.has_current_user_comment(driver)
+                )
+            except TimeoutException as exc:
+                # A click on 发布 is not proof that the comment was accepted.
+                # Mark the participation incomplete so the outer layer can
+                # retry instead of writing a false success.
+                raise Exception("评论提交后未确认，稍后重试") from exc
         except Exception as e:
             mylogger.error("[commit_comment 点击“评论” 出错 %s]" % e, exc_info=True)
             raise

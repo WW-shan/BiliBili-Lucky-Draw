@@ -1250,6 +1250,13 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertNotIn('comment', result['required_actions'])
         self.assertEqual(result['required_actions'], ['follow', 'forward'])
 
+    def test_plain_text_deadline_parses_dot_date_before_chinese_draw_count(self):
+        result = DynamicShareBase._parse_plain_text_deadline(
+            '说说这块屏最吸引你的点。11.16抽一位小伙伴送【HKC精美周边】',
+            now=datetime(2026, 11, 10),
+        )
+        self.assertEqual(result, '2026-11-16 23:59:00')
+
     def test_plain_text_deadline_parses_dot_date_with_day_suffix(self):
         result = DynamicShareBase._parse_plain_text_deadline(
             '开奖时间：11.28日',

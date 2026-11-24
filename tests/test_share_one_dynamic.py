@@ -1035,6 +1035,30 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['has_prize'])
         self.assertTrue(result['confirmed'])
 
+    def test_four_action_slang_and_pocket_book_prize_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '（此条有抽奖，卷管赞平4连揪1宝子迪士尼袖珍书！）'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'follow', 'like', 'comment', 'forward'}.issubset(result['required_actions']))
+
+    def test_four_action_slang_and_new_book_prize_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '（此条有抽奖，卷管赞平4连揪1宝子看新书啦！）'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertTrue({'follow', 'like', 'comment', 'forward'}.issubset(result['required_actions']))
+
+    def test_comment_number_prompt_is_confirmed_as_comment_action(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '在工位的扣 1，在罪恶城的扣 2，在工位但魂在罪恶城的扣 3。11.26抽一位小伙伴送【HKC帆布袋】'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['comment'])
+
     def test_audio_ad_copy_does_not_count_as_giveaway(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '🎵 抽到了别浪费：用傲希音响放这张原声，杜比全景声一开。🐷+❤️+⭐️+💬 评论区聊聊吧。'},

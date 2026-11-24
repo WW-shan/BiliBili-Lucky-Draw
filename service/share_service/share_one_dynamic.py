@@ -570,6 +570,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 '帆布袋', '袋子', '水壶', '吨吨桶', '徽章', '钥匙扣', '毛巾',
                 '手柄', '游戏机', '主机', '外设', '耳机', '键盘', '鼠标',
                 '本书', '一本', '书籍', '图书', '读物', '画册', '小说',
+                '袖珍书', '新书', '单行本', '绘本', '丛书', '漫画书',
                 'pocket', '支架', '电源', '充电', '显示器', '屏幕', '音箱', '音响',
             )
         ) or bool(re.search(r'(?:送|赠|揪|抽|赢取|获得)[^\n]{0,40}[\*＊xX×]\s*\d+', normalized))
@@ -591,10 +592,15 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # Bilibili creators frequently use emoji shorthand for the four
         # engagement actions: 🐷 follow, ❤️ like, ⭐️ favorite/collect, 💬 comment.
         action_scope = action_scope.replace('🐷', '关注').replace('❤️', '点赞').replace('⭐️', '收藏').replace('⭐', '收藏').replace('💬', '评论')
+        # "扣 1 / 扣 2" is a common instruction to leave that number in the
+        # comments. Normalize it to an explicit comment action.
+        action_scope = re.sub(
+            r'扣\s*[0-9一二三四五六七八九十]', '评论', action_scope
+        )
         has_action = any(
             word in action_scope for word in (
                 '关注', '转发', '评论', '留言', '点赞', '预约', '五连', '5️⃣连',
-                '三连', '3️⃣连', 'plq', '关转', '关+转', '关&转', '转评',
+                '三连', '3️⃣连', '4连', '四连', '卷管赞平', 'plq', '关转', '关+转', '关&转', '转评',
                 '转赞评', '关评', '顶评', '本条动态', '本动态',
                 '关', '转',
             )
@@ -687,8 +693,15 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             '评论区抽', '关注转发评论', '关转评', '五连', '5️⃣连', 'plq',
         )
 
+        four_lian = any(
+            phrase in normalized for phrase in (
+                '4连', '四连', '卷管赞平4连', '转关赞评',
+                '关转赞评', '转赞评',
+            )
+        )
         compact_actions = (
-            '关转赞评' in normalized
+            four_lian
+            or '关转赞评' in normalized
             or '转赞评' in normalized
             or '关转评' in normalized
             or '关&转&赞&评' in normalized
@@ -730,7 +743,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 word in action_scope for word in ('聊聊', '说说', '分享', '祝福')
             )
         has_follow = (
-            '关注' in normalized
+            four_lian
+            or '关注' in normalized
             or '关注' in action_scope
             or '关' in action_text
             or '关转评' in normalized
@@ -738,7 +752,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         # A bare "赞" in unrelated product copy must not count as engagement.
         has_like = (
-            '点赞' in normalized
+            four_lian
+            or '点赞' in normalized
             or '点赞' in action_scope
             or '赞' in normalized
             or '赞' in action_text

@@ -126,17 +126,20 @@ class VerifyLotteryService(object):
                 # t.bilibili.com/<id> and www.bilibili.com/opus/<id> are the
                 # same object; verify it once and sync both rows together.
                 continue
+            # Action failures are tombstones, not permission to re-execute.
+            # Check the cache before the ready-rule shortcut; otherwise a stale
+            # rule can be promoted from 0 back to 5 immediately.
+            if self.scan_cache_dao.has_recent_failure(
+                'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
+            ):
+                stats['skipped_recent'] += 1
+                continue
             existing_rule = self.ready_dao.query_by_url(url)
             if isinstance(existing_rule, dict) and existing_rule:
                 if not self._is_expired(existing_rule.get('lottery_end_time')):
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     stats['skipped_recent'] += 1
                     continue
-            if self.scan_cache_dao.has_recent_failure(
-                'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
-            ):
-                stats['skipped_recent'] += 1
-                continue
             seen_dynamic_ids.add(dynamic_id)
             if str(candidate.get('status')) == '3':
                 stats['reverified_after_failure'] += 1

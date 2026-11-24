@@ -285,6 +285,24 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         )
 
 
+    def test_recent_action_failure_blocks_rule_shortcut(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1270000000000000001', 'status': '0'},
+        ]
+        service.scan_cache_dao.has_recent_failure.return_value = True
+        service.ready_dao.query_by_url.return_value = {
+            'dyn_url': 'https://www.bilibili.com/opus/1270000000000000001',
+            'lottery_end_time': '2099-01-01 00:00:00',
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['checked'], 0)
+        self.assertEqual(stats['skipped_recent'], 1)
+        service.ready_dao.query_by_url.assert_not_called()
+        service.draw_dao.update_sharedUrl.assert_not_called()
+
     def test_existing_live_rule_is_not_downgraded_by_duplicate_verification(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [

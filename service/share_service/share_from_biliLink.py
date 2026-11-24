@@ -77,7 +77,7 @@ class BiliLinkShare(object):
                     mylogger.warning('跳过过期/历史动态，不执行抽奖：%s', lucky_dynamic_url)
                     continue
                 filtered_datas.append(data)
-            datas = filtered_datas
+            datas = self._dedupe_ready_links(filtered_datas)
             if not datas:
                 mylogger.info('本轮没有现代动态ID，跳过登录与执行')
                 return
@@ -281,4 +281,45 @@ class BiliLinkShare(object):
     def get_today_dynamic_links(self):
         """只读取已确认官方 lottery_id 的可执行队列。"""
         return self.lottery_ready_dao.query_ready(limit=globals.share_batch_limit, user_id=self.user_id)
+
+    @staticmethod
+    def _has_explicit_required_actions(data):
+        raw = data.get('required_actions') if isinstance(data, dict) else None
+        if isinstance(raw, (list, tuple)):
+            return bool(raw)
+        if not isinstance(raw, str) or not raw.strip():
+            return False
+        text = raw.strip()
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                return False
+        return isinstance(parsed, (list, tuple)) and bool(parsed)
+
+    @classmethod
+    def _dedupe_ready_links(cls, datas):
+        """Execute each dynamic once, preferring a verified plain-text rule."""
+        selected = {}
+        order = []
+        for data in datas:
+            url = (data or {}).get('dyn_url') if isinstance(data, dict) else None
+            match = re.search(r'/(\d+)(?:\?|$)', str(url or ''))
+            key = match.group(1) if match else str(url or '')
+            if not key:
+                continue
+            explicit = cls._has_explicit_required_actions(data)
+            priority = (
+                0 if explicit and data.get('lottery_kind') == 'plain_text'
+                else 1 if explicit
+                else 2
+            )
+            if key not in selected:
+                order.append(key)
+                selected[key] = (priority, data)
+            elif priority < selected[key][0]:
+                selected[key] = (priority, data)
+        return [selected[key][1] for key in order]
 

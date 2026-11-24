@@ -1,3 +1,4 @@
+import ast
 import calendar
 import json
 import re
@@ -194,14 +195,45 @@ class DynamicShareBase(object):
         """
         self.notice_lottery_time = None
         self.lottery_time = self._coerce_datetime(lottery_end_time)
+        default_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
+        required_actions_error = None
         if required_actions is None:
-            required_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
+            required_actions = default_actions
         elif isinstance(required_actions, str):
+            raw_required_actions = required_actions.strip()
+            parsed_actions = None
             try:
-                required_actions = json.loads(required_actions)
+                parsed_actions = json.loads(raw_required_actions)
             except Exception:
-                required_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
+                try:
+                    parsed_actions = ast.literal_eval(raw_required_actions)
+                except Exception:
+                    parsed_actions = None
+            if isinstance(parsed_actions, (list, tuple)):
+                required_actions = list(parsed_actions)
+            elif raw_required_actions in ('', 'None', 'null'):
+                required_actions = default_actions
+            else:
+                required_actions = []
+                required_actions_error = (
+                    'required_actions 无法解析，拒绝执行以避免误操作：%s'
+                    % raw_required_actions[:200]
+                )
+        elif isinstance(required_actions, (list, tuple)):
+            required_actions = list(required_actions)
+        else:
+            required_actions = []
+            required_actions_error = (
+                'required_actions 类型无效，拒绝执行以避免误操作：%s'
+                % type(required_actions).__name__
+            )
         self.required_actions = list(required_actions or [])
+        if required_actions_error:
+            self.last_error = required_actions_error
+            self.status = 3
+            self.share_status = 3
+            mylogger.error(required_actions_error)
+            return
         self.original_texts = list(original_texts or [])
         try:
             bro.get(lucky_dynamic_url)

@@ -87,6 +87,8 @@ class BiliLinkShareTests(unittest.TestCase):
         ), patch(
             'service.share_service.share_from_biliLink.get_random_comment_content',
             return_value='comment',
+        ), patch(
+            'service.share_service.share_from_biliLink.random_sleep'
         ):
             service.do_share_by_links()
 
@@ -310,6 +312,58 @@ class BiliLinkShareTests(unittest.TestCase):
         )
         service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
             url='https://www.bilibili.com/opus/1268647448530649174', status=1
+        )
+
+    def test_duplicate_url_forms_execute_only_once_with_explicit_rule(self):
+        service = self.build_service()
+        service.get_today_dynamic_links.return_value = [
+            {
+                'dyn_url': 'https://t.bilibili.com/1273348285941153816',
+                'lottery_kind': 'official',
+                'lottery_end_time': '2026-11-25 20:00:00',
+                'required_actions': None,
+            },
+            {
+                'dyn_url': 'https://www.bilibili.com/opus/1273348285941153816',
+                'lottery_kind': 'plain_text',
+                'lottery_end_time': '2026-11-25 20:00:00',
+                'required_actions': "['follow']",
+            },
+        ]
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+        dynamic = Mock()
+        dynamic.share_status = 0
+        dynamic.status = 0
+        dynamic.upId = '456'
+        dynamic.upUrl = 'https://space.bilibili.com/456'
+        dynamic.share_time = '2026-11-25 06:00:00'
+        dynamic.last_error = None
+
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase',
+            return_value=dynamic,
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_share_content',
+            return_value='share',
+        ), patch(
+            'service.share_service.share_from_biliLink.get_random_comment_content',
+            return_value='comment',
+        ):
+            service.do_share_by_links()
+
+        dynamic.share_one.assert_called_once()
+        self.assertEqual(
+            dynamic.share_one.call_args.args[2],
+            'https://www.bilibili.com/opus/1273348285941153816',
+        )
+        self.assertEqual(
+            dynamic.share_one.call_args.kwargs['required_actions'],
+            "['follow']",
         )
 
     def test_risk_control_failure_stops_instead_of_being_silent(self):

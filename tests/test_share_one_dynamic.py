@@ -229,6 +229,91 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertEqual(share.share_status, 0)
         self.assertIsNone(share.last_error)
 
+    def test_python_repr_required_actions_do_not_fall_back_to_defaults(self):
+        browser = Mock()
+        chains = Mock()
+        share = DynamicShareBase()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'get_dynamic_text', return_value='关注我，抽一位送礼物'
+        ), patch.object(share, 'resolve_lottery_time'), patch.object(
+            share, 'is_expired_dynamic', return_value=False
+        ), patch.object(share, 'ensure_publish_cookie'), patch.object(
+            share, 'click_follow_all'
+        ) as click_follow, patch.object(
+            share, 'click_like'
+        ) as click_like, patch.object(
+            share, 'click_reserve'
+        ) as click_reserve, patch.object(
+            share, 'has_current_user_comment', return_value=False
+        ), patch.object(
+            share, 'commit_comment'
+        ) as commit_comment, patch.object(
+            share, 'is_already_forwarded', return_value=False
+        ), patch.object(
+            share, 'click_share'
+        ) as click_share, patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            share.share_one(
+                browser,
+                chains,
+                'https://www.bilibili.com/opus/1273348285941153816',
+                'share',
+                'comment',
+                lottery_kind='plain_text',
+                lottery_rule="{'text': '只要是我的粉丝都可以参与抽奖'}",
+                required_actions="['follow']",
+            )
+
+        click_follow.assert_called_once_with(browser, chains)
+        click_like.assert_not_called()
+        click_reserve.assert_not_called()
+        commit_comment.assert_not_called()
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 0)
+        self.assertIsNone(share.last_error)
+
+    def test_malformed_required_actions_fail_closed_without_social_actions(self):
+        browser = Mock()
+        share = DynamicShareBase()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'get_dynamic_text', return_value='关注我，抽一位送礼物'
+        ), patch.object(share, 'resolve_lottery_time'), patch.object(
+            share, 'is_expired_dynamic', return_value=False
+        ), patch.object(share, 'ensure_publish_cookie'), patch.object(
+            share, 'has_current_user_comment', return_value=False
+        ), patch.object(share, 'is_already_forwarded', return_value=False), patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ), patch.object(
+            share, 'click_follow_all'
+        ) as click_follow, patch.object(
+            share, 'click_like'
+        ) as click_like, patch.object(
+            share, 'click_reserve'
+        ) as click_reserve, patch.object(
+            share, 'commit_comment'
+        ) as commit_comment, patch.object(
+            share, 'click_share'
+        ) as click_share:
+            share.share_one(
+                browser,
+                Mock(),
+                'https://www.bilibili.com/opus/1273348285941153816',
+                'share',
+                'comment',
+                lottery_kind='plain_text',
+                lottery_rule="{'text': '只要是我的粉丝都可以参与抽奖'}",
+                required_actions='not-a-list',
+            )
+
+        click_follow.assert_not_called()
+        click_like.assert_not_called()
+        click_reserve.assert_not_called()
+        commit_comment.assert_not_called()
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 3)
+        self.assertIn('required_actions', share.last_error)
+
     def test_share_flow_uses_opus_toolbar_and_confirms_forward(self):
         browser = Mock()
         chains = Mock()

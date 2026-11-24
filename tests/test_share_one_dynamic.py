@@ -1225,6 +1225,57 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.date().isoformat(), '2026-10-31')
 
+    def test_video_coin_requirement_is_recorded_when_explicit(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发+评论本动态，视频需投币。11月28日抽一位送耳机。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertIn('coin', result['required_actions'])
+
+    def test_empty_draw_api_body_is_recovered_from_dynamic_page(self):
+        share = DynamicShareBase()
+        item = {'modules': {'module_dynamic': {
+            'desc': None,
+            'major': {'type': 'MAJOR_TYPE_DRAW'},
+        }}}
+        share._fetch_dynamic_detail_item = Mock(return_value=item)
+        share.wait_page_ready = Mock()
+        share.get_dynamic_text = Mock(return_value=(
+            '关注并转发+评论本动态，视频需投币。11月28日抽一位送耳机。'
+        ))
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/'
+        browser.execute_async_script = Mock()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1272294086184796176', retries=1
+        )
+
+        browser.get.assert_called_once_with('https://www.bilibili.com/opus/1272294086184796176')
+        self.assertEqual(result['reason'], 'requires_coin')
+        browser.execute_async_script.assert_not_called()
+
+    def test_coin_requirement_is_not_auto_executed(self):
+        share = DynamicShareBase()
+        item = {'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发+评论本动态，视频需投币。11月28日抽一位送耳机。'},
+            ]},
+            'additional': {'reserve': {'rid': '123'}, 'type': 'ADDITIONAL_TYPE_RESERVE'},
+        }}}
+        share._fetch_dynamic_detail_item = Mock(return_value=item)
+        browser = Mock()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1272294086184796176', retries=1
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['reason'], 'requires_coin')
+        browser.execute_async_script.assert_not_called()
+
     def test_question_prompt_for_display_parameters_is_comment_action(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '说说这块屏最吸引你的点。11.16抽一位小伙伴送【HKC精美周边】'},

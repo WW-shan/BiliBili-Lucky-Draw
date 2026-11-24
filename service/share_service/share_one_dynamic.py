@@ -556,7 +556,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         title = (modules.get('module_title') or {}).get('text') if isinstance(modules, dict) else ''
         return ' '.join(part for part in (title, desc.get('text') or '') if part)
 
-    def _restore_draw_text_from_page(self, bro, item):
+    def _restore_draw_text_from_page(self, bro, item, source_url=None):
         """Fill missing body text for image/draw cards from the opus page."""
         if not isinstance(item, dict):
             return False
@@ -574,6 +574,19 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         major = module_dynamic.get('major') or {}
         if major.get('type') != 'MAJOR_TYPE_DRAW':
             return False
+        if source_url:
+            try:
+                current_source = re.search(r'/(\d+)(?:\?|$)', str(bro.current_url))
+                requested_source = re.search(r'/(\d+)(?:\?|$)', str(source_url))
+                if (
+                    not current_source
+                    or not requested_source
+                    or current_source.group(1) != requested_source.group(1)
+                ):
+                    bro.get(source_url)
+                    self.wait_page_ready(bro)
+            except Exception:
+                return False
         try:
             body_text = self.get_dynamic_text(bro)
         except Exception:
@@ -676,7 +689,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         has_action = direct_comment_prompt or any(
             word in action_scope for word in (
-                '关注', '转发', '评论', '留言', '点赞', '预约', '五连', '5️⃣连',
+                '关注', '转发', '评论', '留言', '点赞', '预约', '投币', '五连', '5️⃣连',
                 '三连', '3️⃣连', '4连', '四连', '卷管赞平', 'plq', '关转', '关+转', '关&转', '转评',
                 '转赞评', '关评', '顶评', '本条动态', '本动态',
                 '关', '转',
@@ -881,6 +894,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             has_favorite = True
             has_forward = True
         has_reserve = '预约' in normalized
+        has_coin = '投币' in action_scope
         if has_reserve:
             action = 'reserve'
         elif has_forward:
@@ -904,6 +918,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             required_actions.append('forward')
         if has_reserve:
             required_actions.append('reserve')
+        if has_coin:
+            required_actions.append('coin')
         result.update(
             confirmed=True,
             kind='plain_text_lottery',
@@ -1233,8 +1249,18 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # text before classification; otherwise we incorrectly fall through to
         # the official lottery endpoint (and later see -9999).
         if not self._dynamic_item_text(item).strip():
-            self._restore_draw_text_from_page(bro, item)
+            self._restore_draw_text_from_page(bro, item, lucky_dynamic_url)
         classification = self.classify_lottery_item(item)
+        required_actions = classification.get('required_actions') or []
+        if classification.get('confirmed') and 'coin' in required_actions:
+            # Coin is a scarce, user-owned asset. Do not spend it without an
+            # explicit opt-in; exclude this row instead of retrying forever.
+            return {
+                'confirmed': False,
+                'retryable': False,
+                'reason': 'requires_coin',
+                'lottery_rule': classification,
+            }
         has_official_component = self._has_official_lottery_component(item)
         if isinstance(item, dict) and not has_official_component:
             if classification.get('confirmed'):

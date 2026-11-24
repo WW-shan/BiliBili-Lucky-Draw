@@ -29,6 +29,13 @@ class VerifyLotteryService(object):
         'api_code:-509', 'api_code:412', 'request_error',
         'opus_detail_invalid_response',
     })
+    # These mean the post cannot be proven executable from this pass, not
+    # that the remote endpoint is unavailable. They must not circuit-break a
+    # batch: otherwise three ambiguous posts can starve every later candidate.
+    SEMANTIC_DEFER_REASONS = frozenset({
+        'missing_prize', 'missing_action', 'code0_without_lottery_id',
+        'api_code:4101152',
+    })
 
     @staticmethod
     def _is_expired(lottery_end_time):
@@ -100,6 +107,12 @@ class VerifyLotteryService(object):
             url = candidate.get('dyn_url')
             if not url:
                 continue
+            if str(candidate.get('status')) == '5':
+                # A status-5 row already has a verified rule. Never send it
+                # back through text classification just because it lost a
+                # transient race with the worker; otherwise a newer rule can
+                # be downgraded by an older parse.
+                continue
             dynamic_match = re.search(r'/(\d+)(?:\?|$)', str(url))
             dynamic_id = dynamic_match.group(1) if dynamic_match else url
             if dynamic_match and self.min_current_dynamic_id:
@@ -119,7 +132,12 @@ class VerifyLotteryService(object):
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     stats['skipped_recent'] += 1
                     continue
-            if self.scan_cache_dao.has_recent_failure(
+            # A manually audited row may have been re-opened as status 0
+            # while its old cache entry still says the previous pass failed.
+            # Give explicit audit resets one fresh attempt; normal automatic
+            # retries continue to honor the per-URL cooldown.
+            cache_reset = str(candidate.get('candidate_reset') or '') == '1'
+            if not cache_reset and self.scan_cache_dao.has_recent_failure(
                 'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
             ):
                 stats['skipped_recent'] += 1
@@ -174,17 +192,25 @@ class VerifyLotteryService(object):
                     self.scan_cache_dao.save_success('lottery', url, source, note, 0)
                     stats['excluded'] += 1
                 else:
+                    reason = str(result.get('reason') or 'unknown')
+                    diagnostic = reason
+                    api_message = str(result.get('api_message') or '').strip()
+                    if api_message:
+                        diagnostic += ': ' + api_message[:200]
                     self.scan_cache_dao.save_failure(
-                        'lottery', url, source, note, result.get('reason') or 'unknown'
+                        'lottery', url, source, note, diagnostic
                     )
                     stats['deferred'] += 1
                     mylogger.info(
-                        '抽奖资格暂无法确认，保留待重试：%s（%s）',
+                        '抽奖资格暂无法确认，保留待重试：%s（%s%s）',
                         url,
-                        result.get('reason') or 'unknown',
+                        reason,
+                        ('，接口消息：' + api_message[:80]) if api_message else '',
                     )
-                    consecutive_unknown += 1
-                    reason = str(result.get('reason') or '')
+                    if reason not in self.SEMANTIC_DEFER_REASONS:
+                        consecutive_unknown += 1
+                    else:
+                        consecutive_unknown = 0
                     if reason in self.RISK_CONTROL_REASONS:
                         stats['cooldown_started'] = 1
                         mylogger.warning(

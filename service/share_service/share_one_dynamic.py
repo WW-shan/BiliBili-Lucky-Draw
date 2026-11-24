@@ -59,8 +59,15 @@ class DynamicShareBase(object):
         };
         const timer = setTimeout(() => finish({timeout: true}), 10000);
         fetch(endpoint, {credentials: 'include'})
-          .then(response => response.json())
-          .then(payload => {
+          .then(async response => {
+            const raw = await response.text();
+            let payload = {};
+            try {
+              payload = JSON.parse(raw);
+            } catch (error) {
+              finish({http_status: response.status, invalid_json: true, raw: raw.slice(0, 500)});
+              return;
+            }
             const data = payload.data || {};
             finish({
               code: payload.code,
@@ -188,13 +195,27 @@ class DynamicShareBase(object):
                     self.commit_comment(bro, chains, comment_content)
                 random_sleep()
             if 'forward' in self.required_actions:
-                if self.is_already_forwarded(
+                already_forwarded = self.is_already_forwarded(
                     bro, lucky_dynamic_url,
                     getattr(self, 'original_dynamic_text', ''),
-                ):
+                )
+                if already_forwarded:
                     mylogger.info("当前账号已转发，跳过转发")
+                elif already_forwarded is None:
+                    # The own-dynamic feed can be slow to render. Clicking
+                    # again would create a duplicate repost, so this action
+                    # remains incomplete and the outer layer re-verifies it.
+                    raise Exception("转发状态未能确认，稍后重试")
                 else:
                     self.click_share(bro, chains, share_content)
+                    confirmed = self.is_already_forwarded(
+                        bro, lucky_dynamic_url,
+                        getattr(self, 'original_dynamic_text', ''),
+                    )
+                    if confirmed is False:
+                        raise Exception("转发提交后未在个人动态确认")
+                    if confirmed is None:
+                        raise Exception("转发提交后状态未能确认，稍后重试")
                 random_sleep()
             # 回填状态
             self.share_status = 0
@@ -509,6 +530,9 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             'action': None,
             'reason': '',
             'text': text,
+            'has_prize': False,
+            'has_action': False,
+            'action_certainty': 'explicit',
         }
         if not normalized:
             return result
@@ -540,8 +564,17 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 '帆布袋', '袋子', '水壶', '吨吨桶', '徽章', '钥匙扣', '毛巾',
                 '手柄', '游戏机', '主机', '外设', '耳机', '键盘', '鼠标',
                 '本书', '一本', '书籍', '图书', '读物', '画册', '小说',
+                'pocket', '支架', '电源', '充电', '显示器', '屏幕', '音箱', '音响',
             )
         ) or bool(re.search(r'(?:送|赠|揪|抽|赢取|获得)[^\n]{0,40}[\*＊xX×]\s*\d+', normalized))
+        # A product name in brackets after an explicit draw/gift verb is
+        # sufficient prize evidence even when it is a brand-new noun.
+        if not has_prize:
+            has_prize = bool(re.search(
+                r'(?:抽|送|赠|揪|赢取|领取)[^。！!；;\n]{0,30}(?:【[^】]{1,30}】|台|个|件|份|套|箱|瓶|本|张|位)[^。！!；;\n]{0,10}(?:送给|赠|给|抽|$|[。！!；;])',
+                normalized,
+                re.I,
+            ))
         # A collection post often says "给up添加特别关注"; that inline
         # mention is not a call to perform a social action for this post.
         action_scope = re.sub(
@@ -560,6 +593,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 '关', '转',
             )
         )
+        result['has_prize'] = bool(has_prize)
+        result['has_action'] = bool(has_action)
         is_result_notice = (
             any(word in normalized for word in result_words + past_result_words)
             or (
@@ -598,6 +633,11 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # “福利” alone is marketing copy; require a real giveaway verb or
         # an explicit compact engagement rule plus a draw/date/product cue.
         giveaway_words = ('抽', '揪', '抓', '抢', '送', '赠', '奖品', '有奖', '开奖', '带走', 'roll', '赢取', '领取')
+        # "抽到了/抽到" is colloquial result language, not an invitation to
+        # enter. Require a real draw verb form or an explicit giveaway cue.
+        reduced_verbs = re.sub(r'抽(?:到了|到|了)', '', normalized)
+        if not any(word in reduced_verbs for word in giveaway_words):
+            return result
         compact_giveaway = any(
             word in normalized for word in ('关转赞评', '转赞评', '关转评', '关+赞+转+评')
         ) and bool(re.search(r'(?:\d{1,2}[./月-]\d{1,2}|\d{1,2}月\d{1,2}|\d+位|\d+个|\d+件)', normalized))
@@ -618,6 +658,9 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         if not has_prize and not has_action:
             result.update(kind='suspected_giveaway', reason='missing_prize')
             return result
+        # "抽取/赠送" describes the draw mechanics, not permission to invent
+        # a social action. Without an explicit interaction verb, keep the post
+        # reviewable instead of defaulting to forward-only execution.
         if not has_action:
             result.update(kind='suspected_giveaway', reason='missing_action')
             return result
@@ -697,7 +740,17 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             or '5️⃣连' in normalized
             or '五连' in normalized
         )
-        has_three_lian = '三连' in normalized or '3️⃣连' in normalized
+        # Bilibili shorthand uses "三连" for like+comment+forward. When the
+        # post spells out a three-action set (点赞/评论/转发), treat it the
+        # same way instead of silently omitting the favorite-style component.
+        if (
+            ('点赞' in normalized or '赞' in action_text)
+            and ('评论' in normalized or '留言' in normalized)
+            and ('转发' in normalized or '转' in action_text)
+        ):
+            has_three_lian = True
+        else:
+            has_three_lian = '三连' in normalized or '3️⃣连' in normalized
         has_five_lian = '五连' in normalized or '5️⃣连' in normalized
         star_in_action_context = bool(re.search(
             r'(?:参与方式|参与条件|参与步骤)[^\n]{0,60}[⭐️⭐]',
@@ -706,6 +759,10 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         has_favorite = (
             has_five_lian
             or star_in_action_context
+            or bool(re.search(
+                r'(?:点赞[、,+＆&和与及]*)?收藏[、,+＆&和与及]*(?:转发|评论|点赞|转|评)',
+                normalized,
+            ))
             or bool(re.search(
                 r'收藏[^\n]{0,12}(?:本条|本动态|此动态|动态|参与)',
                 normalized,
@@ -755,6 +812,9 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             action=action,
             required_actions=required_actions,
             reason='verified_text_rules',
+            has_prize=bool(has_prize),
+            has_action=bool(required_actions),
+            action_certainty='implicit' if ('抽取' in normalized or '赠送' in normalized or '赢取' in normalized) and not any(word in normalized for word in ('关注', '点赞', '评论', '留言', '转发', '五连', '三连')) else 'explicit',
         )
         return result
 
@@ -1125,6 +1185,8 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             requests.append((10, reserve_rid))
 
         last_reason = 'empty_response'
+        last_api_message = ''
+        last_http_status = None
         attempts = max(1, int(retries))
         for candidate_type, candidate_id in requests:
             endpoint = self._notice_endpoint(candidate_id, candidate_type)
@@ -1132,6 +1194,9 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 result = bro.execute_async_script(self.LOTTERY_NOTICE_SCRIPT, endpoint)
                 if not isinstance(result, dict):
                     last_reason = 'invalid_response'
+                elif result.get('invalid_json'):
+                    last_reason = 'invalid_response'
+                    last_http_status = result.get('http_status')
                 elif result.get('timeout'):
                     last_reason = 'timeout'
                     break
@@ -1140,6 +1205,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     break
                 else:
                     code = result.get('code')
+                    last_api_message = str(result.get('message') or '')
                     if code == 0 and result.get('lottery_id'):
                         self.lottery_source = 'official_notice'
                         self.notice_lottery_time = self._coerce_datetime(
@@ -1189,11 +1255,16 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     time.sleep(0.4 * (attempt + 1))
             if last_reason == 'code0_without_lottery_id':
                 continue
-        return {
+        result = {
             'confirmed': False,
             'retryable': True,
             'reason': last_reason,
         }
+        if last_api_message:
+            result['api_message'] = last_api_message
+        if last_reason == 'invalid_response' and last_http_status:
+            result['http_status'] = last_http_status
+        return result
 
     def verify_official_lottery(self, bro, lucky_dynamic_url):
         """只有查到官方互动抽奖 lottery_id 才允许执行关注/评论/转发。"""
@@ -1918,7 +1989,6 @@ if (comments) comments.scrollIntoView({block: 'center'});
             if (
                 any(word in text for word in ["已转发", "已分享"])
                 or "forwarded" in cls
-                or "active" in cls
                 or aria_pressed == "true"
             ):
                 return True
@@ -1938,33 +2008,34 @@ if (comments) comments.scrollIntoView({block: 'center'});
                 lambda driver: driver.execute_script('return document.readyState')
                 in ('interactive', 'complete')
             )
-            try:
-                WebDriverWait(bro, 15).until(
-                    lambda driver: len(
-                        driver.find_elements(By.CSS_SELECTOR, '.bili-dyn-item')
-                    ) > 0
-                )
-            except TimeoutException:
-                bro.get(original_url)
-                return False
-            cards = self.get_visible_elements(bro, '.bili-dyn-item')
-            for card in cards:
-                html = card.get_attribute('outerHTML') or ''
-                text = (card.get_attribute('innerText') or card.text or '')
-                if dynamic_id in html or dynamic_id in text:
-                    bro.get(original_url)
-                    return True
-                fingerprint = re.sub(r'\s+', '', str(original_text or ''))[:40]
-                normalized_card = re.sub(r'\s+', '', str(text or ''))
-                if fingerprint and fingerprint in normalized_card:
-                    bro.get(original_url)
-                    return True
-                links = card.find_elements(By.TAG_NAME, 'a')
-                for link in links:
-                    href = link.get_attribute('href') or ''
-                    if dynamic_id in href:
+            deadline = time.monotonic() + 45
+            cards = []
+            while time.monotonic() < deadline:
+                cards = self.get_visible_elements(bro, '.bili-dyn-item')
+                for card in cards:
+                    html = card.get_attribute('outerHTML') or ''
+                    text = (card.get_attribute('innerText') or card.text or '')
+                    if dynamic_id in html or dynamic_id in text:
                         bro.get(original_url)
                         return True
+                    fingerprint = re.sub(r'\s+', '', str(original_text or ''))[:40]
+                    normalized_card = re.sub(r'\s+', '', str(text or ''))
+                    if fingerprint and fingerprint in normalized_card:
+                        bro.get(original_url)
+                        return True
+                    links = card.find_elements(By.TAG_NAME, 'a')
+                    for link in links:
+                        href = link.get_attribute('href') or ''
+                        if dynamic_id in href:
+                            bro.get(original_url)
+                            return True
+                time.sleep(1.5)
+            # A slow SPA render is not evidence that forwarding did not
+            # happen. Do not risk a duplicate post; callers must verify the
+            # action instead of treating this as a definitive False.
+            mylogger.warning('个人动态页未加载出目标动态，无法确认是否已转发')
+            bro.get(original_url)
+            return None
         except Exception:
             try:
                 bro.get(original_url)
@@ -2122,7 +2193,7 @@ fetch('https://api.bilibili.com/x/relation?fid=' + encodeURIComponent(fid), {cre
             button = self.wait_clickable_css(bro, self.FAVORITE_CSS)
             cls = (button.get_attribute('class') or '').lower()
             if 'active' not in cls and 'favorited' not in cls:
-                mylogger.warning('收藏状态无法确认，继续后续动作')
+                raise Exception('收藏操作提交后未确认')
         except Exception:
             mylogger.error('[click_favorite 点击收藏出错]', exc_info=True)
             raise

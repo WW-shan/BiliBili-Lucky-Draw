@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 
 
 class LotteryReadyDao(object):
@@ -91,17 +92,30 @@ class LotteryReadyDao(object):
         )
         return self.db.executeCommit(sql)
 
+    @staticmethod
+    def _dynamic_id(value):
+        match = re.search(r'/(\d+)(?:\?|$)', str(value or ''))
+        return match.group(1) if match else None
+
     def restore_live_ready_statuses(self):
+        """Restore live rules and synchronize duplicate URL representations."""
         sql = """
         UPDATE t_draw_dynamic d
-        JOIN t_lottery_ready r ON r.dyn_url = d.dyn_url
+        JOIN t_lottery_ready r
+          ON r.dyn_url = d.dyn_url
+          OR SUBSTRING_INDEX(SUBSTRING_INDEX(r.dyn_url, '/', -1), '?', 1)
+             = SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
         SET d.status = '5'
         WHERE d.status IN ('0', '2')
           AND (r.lottery_end_time IS NULL OR r.lottery_end_time > NOW())
           AND NOT EXISTS (
               SELECT 1 FROM t_share_info s
-              WHERE s.share_url = d.dyn_url AND s.user_id = '35549700'
+              WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(s.share_url, '/', -1), '?', 1)
+                    = SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
+                AND s.user_id = '35549700'
           )
+          AND SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
+              REGEXP '^[0-9]+$'
         """
         return self.db.executeCommit(sql)
 
@@ -124,6 +138,12 @@ class LotteryReadyDao(object):
         JOIN t_lottery_ready r ON r.dyn_url = d.dyn_url
         WHERE d.status = '5'
           AND (r.lottery_end_time IS NULL OR r.lottery_end_time > NOW())
+          AND NOT EXISTS (
+              SELECT 1 FROM t_share_info s
+              WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(s.share_url, '/', -1), '?', 1)
+                    = SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
+                AND s.user_id = '35549700'
+          )
         ORDER BY
             CASE WHEN r.lottery_end_time IS NULL THEN 1 ELSE 0 END,
             r.lottery_end_time ASC,

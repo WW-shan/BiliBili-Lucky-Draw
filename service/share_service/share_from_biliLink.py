@@ -37,7 +37,7 @@ class BiliLinkShare(object):
         self.draw_dynamic_dao = DrawDynamicDao(db)
         self.lottery_ready_dao = LotteryReadyDao(db)
         self.statistics_dao = StatisticsDao(db)
-        mylogger.error("启动：根据B站up主的分享链接进行抽奖动态转发!")
+        mylogger.info("启动：根据B站up主的分享链接进行抽奖动态转发!")
 
     def do_share_by_links(self):
         do_share_cnt = 0
@@ -156,6 +156,14 @@ class BiliLinkShare(object):
                 if dyn.share_status == 0:
                     self.draw_dynamic_dao.update_sharedUrl(url=lucky_dynamic_url, status=1)
                     self.share_info_dao.insert_shareInfo(dyn)
+                    # A successful action may have run through the opus form
+                    # while another row still holds the t.bilibili.com form.
+                    # Reconcile all forms by dynamic id after the share record
+                    # exists, otherwise stale pending/expired rows can trigger
+                    # a duplicate action later.
+                    self.draw_dynamic_dao.mark_shared_by_dynamic_id(
+                        lucky_dynamic_url, self.user_id
+                    )
                     up_id = str(getattr(dyn, 'upId', '') or '').strip()
                     up_url = str(getattr(dyn, 'upUrl', '') or '').strip()
                     if up_id and up_id.lower() != 'none' and up_url and up_url.lower() != 'none':

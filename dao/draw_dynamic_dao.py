@@ -41,7 +41,8 @@ class DrawDynamicDao(object):
         """轮转验证队列：从未尝试的最先，其次最久未尝试的。"""
         limit = max(1, int(limit))
         sql = """
-        SELECT d.*, c.update_time AS lottery_checked_at
+        SELECT d.*, c.update_time AS lottery_checked_at,
+               1 AS candidate_reset
         FROM t_draw_dynamic d
         LEFT JOIN t_scan_cache c
           ON c.scan_type = 'lottery' AND c.scan_url = d.dyn_url
@@ -98,6 +99,25 @@ class DrawDynamicDao(object):
             except Exception:
                 pass
             raise
+
+    def mark_shared_by_dynamic_id(self, url, user_id):
+        """Mark every URL form completed when the user has a share record."""
+        match = re.search(r'/(\d+)(?:\?|$)', str(url))
+        if not match:
+            return 0
+        dynamic_id = match.group(1)
+        self.db.con.ping(reconnect=True)
+        self.db.cur.execute(
+            "UPDATE " + self.table_name
+            + " SET status = '1' WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(dyn_url, '/', -1), '?', 1) = %s"
+            + " AND EXISTS (SELECT 1 FROM t_share_info s"
+            + " WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(s.share_url, '/', -1), '?', 1) = %s"
+            + " AND s.user_id = %s)",
+            (dynamic_id, dynamic_id, str(user_id)),
+        )
+        rows = self.db.cur.rowcount
+        self.db.con.commit()
+        return rows
 
     def update_sharedUrl(self, url, status):
         try:

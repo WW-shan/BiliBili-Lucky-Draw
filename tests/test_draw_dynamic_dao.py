@@ -39,6 +39,21 @@ class DrawDynamicDaoTests(unittest.TestCase):
         self.assertEqual(update_args, ('5', '%/1268647448530649174', 'https://www.bilibili.com/opus/1268647448530649174'))
         db.con.commit.assert_called_once()
 
+    def test_successful_share_marks_all_url_forms_completed(self):
+        db = Mock()
+        dao = DrawDynamicDao(db)
+
+        dao.mark_shared_by_dynamic_id(
+            'https://www.bilibili.com/opus/1262216984824643604', '35549700'
+        )
+
+        db.con.ping.assert_called_once_with(reconnect=True)
+        sql, args = db.cur.execute.call_args.args
+        self.assertIn("status = '1'", sql)
+        self.assertIn("t_share_info", sql)
+        self.assertIn('substring_index', sql.lower())
+        self.assertEqual(args, ('1262216984824643604', '1262216984824643604', '35549700'))
+
     def test_reset_excluded_to_pending_is_guarded_by_current_status(self):
         db = Mock()
         db.cur.rowcount = 1

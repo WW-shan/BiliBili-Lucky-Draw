@@ -190,6 +190,9 @@ class BiliLinkShareTests(unittest.TestCase):
             required_actions=None,
         )
         service.share_info_dao.insert_shareInfo.assert_called_once_with(dynamic)
+        service.draw_dynamic_dao.mark_shared_by_dynamic_id.assert_called_once_with(
+            'https://www.bilibili.com/opus/123', '35549700'
+        )
         service.follow_up_dao.saverUpdate.assert_called_once_with(
             '456', 'https://space.bilibili.com/456', '35549700'
         )

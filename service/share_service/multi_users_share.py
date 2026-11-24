@@ -16,14 +16,14 @@ class MultiUsersShareService(object):
     """
 
     def __init__(self):
-        mylogger.error('启动多用户转发模式!')
+        mylogger.info('启动多用户转发模式!')
 
 
     def do_multi_uses_share(self):
         try:
             users = self.get_multi_uses()
             for user in users:
-                mylogger.error('用户: ' + user + '开始转发动态.')
+                mylogger.info('用户: ' + user + '开始转发动态.')
                 BiliLinkShare(user).do_share_by_links()
         except (BilibiliAuthenticationRequired, BilibiliVerificationRequired):
             raise

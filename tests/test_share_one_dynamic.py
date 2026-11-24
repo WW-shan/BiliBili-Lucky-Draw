@@ -31,6 +31,61 @@ class ShareOneDynamicTests(unittest.TestCase):
         browser.get.assert_any_call('https://space.bilibili.com/35549700/dynamic')
         browser.get.assert_any_call('https://www.bilibili.com/opus/1264178958128119833')
 
+    def test_ambiguous_forward_state_stops_without_duplicate_post(self):
+        browser = Mock()
+        share = DynamicShareBase()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'resolve_lottery_time'
+        ), patch.object(share, 'is_expired_dynamic', return_value=False), patch.object(
+            share, 'verify_official_lottery', return_value=(True, '')
+        ), patch.object(share, 'ensure_publish_cookie'), patch.object(
+            share, 'click_follow_all'
+        ), patch.object(share, 'click_like'), patch.object(
+            share, 'click_reserve'
+        ), patch.object(share, 'is_already_forwarded', return_value=None), patch.object(
+            share, 'click_share'
+        ) as click_share:
+            share.share_one(
+                browser, Mock(), 'https://www.bilibili.com/opus/1234567890123456789',
+                'share', 'comment',
+                lottery_end_time='2099-01-01 00:00:00',
+                required_actions=['forward'],
+            )
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 3)
+        self.assertIn('未能确认', share.last_error)
+
+    def test_favorite_must_be_confirmed_on_the_page(self):
+        browser = Mock()
+        share = DynamicShareBase()
+        button = Mock()
+        button.get_attribute.return_value = 'side-toolbar__action favorite'
+        share.wait_clickable_css = Mock(return_value=button)
+        with patch.object(share, 'click_by_js'), patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            with self.assertRaises(Exception):
+                share.click_favorite(browser, Mock())
+
+    def test_forward_detection_rechecks_slow_dynamic_feed(self):
+        share = DynamicShareBase()
+        share.user_id = '35549700'
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/opus/1270719989304786947'
+        browser.execute_script.return_value = 'complete'
+        card = Mock()
+        card.get_attribute.return_value = '...1270719989304786947...'
+        card.find_elements.return_value = []
+        # First feed read is empty while the SPA is still loading; the second
+        # read contains the actual card.
+        share.get_visible_elements = Mock(side_effect=[[], [card]])
+        with patch('service.share_service.share_one_dynamic.time.sleep'):
+            result = share.is_already_forwarded(
+                browser, 'https://www.bilibili.com/opus/1270719989304786947'
+            )
+        self.assertTrue(result)
+        self.assertGreaterEqual(share.get_visible_elements.call_count, 2)
+
     def test_share_flow_uses_opus_toolbar_and_confirms_forward(self):
         browser = Mock()
         chains = Mock()
@@ -53,7 +108,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         ), patch.object(
             share, 'commit_comment'
         ) as commit_comment, patch.object(
-            share, 'is_already_forwarded', return_value=False
+            share, 'is_already_forwarded', side_effect=[False, True]
         ), patch.object(
             share, 'click_share'
         ) as click_share, patch(
@@ -404,6 +459,42 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['retryable'])
         self.assertEqual(result['reason'], 'api_code:-352')
         self.assertEqual(browser.execute_async_script.call_count, 1)
+
+    def test_notice_api_invalid_json_is_retryable_transport(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'http_status': 200, 'invalid_json': True, 'raw': '<html>',
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}
+        })
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=1
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['retryable'])
+        self.assertEqual(result['reason'], 'invalid_response')
+
+    def test_notice_api_preserves_server_message_for_diagnostics(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 4101152, 'message': '稍后再试', 'lottery_id': '', 'status': None,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}
+        })
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=1
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'api_code:4101152')
+        self.assertEqual(result['api_message'], '稍后再试')
 
     def test_notice_api_timeout_is_retryable(self):
         browser = Mock()
@@ -832,6 +923,58 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'])
         self.assertEqual(result['required_actions'], ['follow', 'forward'])
 
+    def test_real_pocket_prize_word_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '恭喜BLG夺冠！给大家抽一台Pocket4助助兴！参与方式：关注+转发+评论本条动态。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['has_prize'])
+        self.assertTrue(result['confirmed'])
+
+    def test_real_bracket_product_prize_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '<转发+关注>抽1个【来酷笔记本支架】'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['has_prize'])
+        self.assertTrue(result['confirmed'])
+
+    def test_audio_ad_copy_does_not_count_as_giveaway(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '🎵 抽到了别浪费：用傲希音响放这张原声，杜比全景声一开。🐷+❤️+⭐️+💬 评论区聊聊吧。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertNotEqual(result['kind'], 'plain_text_lottery')
+
+    def test_explicit_collect_and_comment_requires_both_actions(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '名流趣味答题福利上线～在评论区写下答案，完成点赞、收藏、转发三连，随机揪 2 位答对的宝子，赠送名流粉 MO 003！'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        actions = set(result['required_actions'])
+        self.assertTrue({'like', 'favorite', 'comment', 'forward'}.issubset(actions), actions)
+
+    def test_explicit_like_comment_forward_set_requires_all_three_actions(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '在评论区写下答案，完成点赞、收藏、转发三连，随机揪 2 位答对的宝子，赠送名流粉 MO 003！'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'])
+        actions = set(result['required_actions'])
+        self.assertTrue({'like', 'comment', 'forward'}.issubset(actions), actions)
+
+    def test_draw_and_gift_without_interaction_is_not_forward_eligible(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '抽取5位幸运小伙伴，每人赠送随机卡，截止下周六。'},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'missing_action')
+        self.assertFalse(result['has_action'])
+        self.assertTrue(result['has_prize'])
+
     def test_giveaway_with_unknown_prize_noun_but_explicit_actions_is_confirmed(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
@@ -1223,7 +1366,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         ), patch.object(
             share, 'has_current_user_comment', return_value=False
         ), patch.object(
-            share, 'is_already_forwarded', return_value=False
+            share, 'is_already_forwarded', side_effect=[False, True]
         ), patch.object(
             share, 'click_share'
         ) as click_share, patch(

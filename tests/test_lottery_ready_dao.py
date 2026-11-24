@@ -83,6 +83,30 @@ class LotteryReadyDaoTests(unittest.TestCase):
         self.assertIn('r.lottery_end_time > now()', sql)
         self.assertIn('not exists', sql)
 
+    def test_restore_live_ready_statuses_syncs_alternate_url_forms(self):
+        db = Mock()
+        dao = LotteryReadyDao(db)
+
+        dao.restore_live_ready_statuses()
+
+        sql = db.executeCommit.call_args.args[0].lower()
+        self.assertIn('substring_index', sql)
+        self.assertIn("d.status in ('0', '2')", sql)
+        self.assertIn('not exists', sql)
+
+    def test_query_ready_skips_urls_already_recorded_for_the_same_user(self):
+        db = Mock()
+        db.select_db.return_value = []
+        dao = LotteryReadyDao(db)
+        db.select_db.reset_mock()
+
+        dao.query_ready(limit=10)
+
+        sql = db.select_db.call_args.args[0].lower()
+        self.assertIn('not exists', sql)
+        self.assertIn('t_share_info', sql)
+        self.assertIn("s.user_id = '35549700'", sql)
+
     def test_query_by_url_returns_single_rule(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'ready', 'lottery_end_time': '2099-01-01'}]

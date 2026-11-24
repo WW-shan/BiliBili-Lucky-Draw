@@ -597,7 +597,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
 
         # “福利” alone is marketing copy; require a real giveaway verb or
         # an explicit compact engagement rule plus a draw/date/product cue.
-        giveaway_words = ('抽', '揪', '抓', '抢', '送', '赠', '奖品', '有奖', '开奖', '带走', 'roll')
+        giveaway_words = ('抽', '揪', '抓', '抢', '送', '赠', '奖品', '有奖', '开奖', '带走', 'roll', '赢取', '领取')
         compact_giveaway = any(
             word in normalized for word in ('关转赞评', '转赞评', '关转评', '关+赞+转+评')
         ) and bool(re.search(r'(?:\d{1,2}[./月-]\d{1,2}|\d{1,2}月\d{1,2}|\d+位|\d+个|\d+件)', normalized))

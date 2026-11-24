@@ -711,6 +711,20 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'])
         self.assertIn('favorite', result['required_actions'])
 
+    def test_win_prize_wording_is_recognized_as_giveaway(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '点赞、转发并关注官方，评论区聊聊，即有机会赢取：'
+                '《极限竞速：地平线 6》尊享版1份、XBOX手柄1份。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(
+            sorted(result['required_actions']),
+            sorted(['follow', 'comment', 'like', 'forward']),
+        )
+
     def test_product_star_copy_does_not_add_favorite_action(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (

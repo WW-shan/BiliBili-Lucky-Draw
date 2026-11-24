@@ -120,7 +120,9 @@ class MainWorkflowTests(unittest.TestCase):
     def test_continuous_loop_sleeps_only_after_no_progress(self):
         with patch.object(main, '_workflow_paused', False), patch.object(
             main, 'run_pipeline_iteration', side_effect=[True, False, KeyboardInterrupt]
-        ) as iteration, patch.object(main, 'time') as clock:
+        ) as iteration, patch.object(
+            main, 'cleanup_stale_selenium_sessions', return_value=0
+        ), patch.object(main, 'time') as clock:
             clock.sleep.side_effect = [None, KeyboardInterrupt]
             with self.assertRaises(KeyboardInterrupt):
                 main.run_continuous_worker()

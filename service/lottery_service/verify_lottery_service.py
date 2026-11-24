@@ -232,7 +232,7 @@ class VerifyLotteryService(object):
             # reset to status 0/2 by a stale verification pass after a valid
             # rule was written.
             try:
-                self.ready_dao.restore_live_ready_statuses()
+                self.ready_dao.restore_live_ready_statuses(self.user_id)
             except Exception:
                 mylogger.warning('恢复有效抽奖执行状态失败', exc_info=True)
             if self.owns_browser and self.bro is not None:

@@ -97,8 +97,9 @@ class LotteryReadyDao(object):
         match = re.search(r'/(\d+)(?:\?|$)', str(value or ''))
         return match.group(1) if match else None
 
-    def restore_live_ready_statuses(self):
+    def restore_live_ready_statuses(self, user_id='35549700'):
         """Restore live rules and synchronize duplicate URL representations."""
+        user_id = self._literal(user_id)
         sql = """
         UPDATE t_draw_dynamic d
         JOIN t_lottery_ready r
@@ -112,11 +113,11 @@ class LotteryReadyDao(object):
               SELECT 1 FROM t_share_info s
               WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(s.share_url, '/', -1), '?', 1)
                     = SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
-                AND s.user_id = '35549700'
+                AND s.user_id = %s
           )
           AND SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
               REGEXP '^[0-9]+$'
-        """
+        """ % user_id
         return self.db.executeCommit(sql)
 
     def query_by_url(self, dyn_url):
@@ -131,7 +132,8 @@ class LotteryReadyDao(object):
         sql = "DELETE FROM t_lottery_ready WHERE dyn_url = %s" % self._literal(dyn_url)
         return self.db.executeCommit(sql)
 
-    def query_ready(self, limit=10):
+    def query_ready(self, limit=10, user_id='35549700'):
+        user_id = self._literal(user_id)
         sql = """
         SELECT d.*, r.lottery_id, r.lottery_kind, r.lottery_rule, r.required_actions, r.lottery_end_time, r.verified_at
         FROM t_draw_dynamic d
@@ -142,14 +144,14 @@ class LotteryReadyDao(object):
               SELECT 1 FROM t_share_info s
               WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(s.share_url, '/', -1), '?', 1)
                     = SUBSTRING_INDEX(SUBSTRING_INDEX(d.dyn_url, '/', -1), '?', 1)
-                AND s.user_id = '35549700'
+                AND s.user_id = %s
           )
         ORDER BY
             CASE WHEN r.lottery_end_time IS NULL THEN 1 ELSE 0 END,
             r.lottery_end_time ASC,
             CAST(SUBSTRING_INDEX(d.dyn_url, '/', -1) AS UNSIGNED) DESC
         LIMIT %s
-        """ % max(1, int(limit))
+        """ % (user_id, max(1, int(limit)))
         try:
             return self.db.select_db(sql) or []
         except Exception:

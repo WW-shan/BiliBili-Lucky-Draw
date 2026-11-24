@@ -47,6 +47,7 @@ class BiliLinkShareTests(unittest.TestCase):
 
     def test_action_queue_reads_only_verified_ready_rows(self):
         service = BiliLinkShare.__new__(BiliLinkShare)
+        service.user_id = '35549700'
         service.lottery_ready_dao = Mock()
         service.lottery_ready_dao.query_ready.return_value = [{'dyn_url': 'ready'}]
 
@@ -54,7 +55,7 @@ class BiliLinkShareTests(unittest.TestCase):
             rows = BiliLinkShare.get_today_dynamic_links(service)
 
         self.assertEqual(rows, [{'dyn_url': 'ready'}])
-        service.lottery_ready_dao.query_ready.assert_called_once_with(limit=20)
+        service.lottery_ready_dao.query_ready.assert_called_once_with(limit=20, user_id='35549700')
 
     def test_verified_queue_starts_browser_before_login(self):
         service = self.build_service()

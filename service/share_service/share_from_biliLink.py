@@ -220,5 +220,5 @@ class BiliLinkShare(object):
 
     def get_today_dynamic_links(self):
         """只读取已确认官方 lottery_id 的可执行队列。"""
-        return self.lottery_ready_dao.query_ready(limit=globals.share_batch_limit)
+        return self.lottery_ready_dao.query_ready(limit=globals.share_batch_limit, user_id=self.user_id)
 

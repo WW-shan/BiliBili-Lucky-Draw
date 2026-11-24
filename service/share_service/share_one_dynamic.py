@@ -102,6 +102,7 @@ class DynamicShareBase(object):
         self.current_user_name = None
         self.last_error = None
         self.last_api_reason = None
+        self.last_api_message = ''
         self.detail_request_min_seconds = globals.detail_request_min_seconds
         self.detail_request_max_seconds = globals.detail_request_max_seconds
         self.forward_confirm_timeout_seconds = 45
@@ -319,6 +320,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         features='',
         reason_prefix='detail',
     ):
+        self.last_api_message = ''
         try:
             result = bro.execute_async_script(
                 self.DETAIL_SCRIPT, endpoint, dynamic_id, features
@@ -339,6 +341,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             else:
                 self.last_api_reason = '%s_invalid_response' % reason_prefix
             return None
+        self.last_api_message = str(result.get('message') or '').strip()
         code = result.get('code')
         if code not in (None, 0):
             self.last_api_reason = 'api_code:%s' % code
@@ -1117,10 +1120,21 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # 再用 business_type=10 查询。不能把这两种查询混成一个参数。
         item = self._fetch_dynamic_detail_item(bro, lucky_dynamic_url)
         if item is None:
+            reason = self.last_api_reason or 'detail_unavailable'
+            if (
+                reason == 'api_code:4101152'
+                and '动态不可见' in str(self.last_api_message or '')
+            ):
+                return {
+                    'confirmed': False,
+                    'retryable': False,
+                    'reason': 'dynamic_not_visible',
+                    'api_message': self.last_api_message,
+                }
             return {
                 'confirmed': False,
                 'retryable': True,
-                'reason': self.last_api_reason or 'detail_unavailable',
+                'reason': reason,
             }
         # Picture/draw cards can expose an empty desc in the detail API while
         # the opus page still contains the actual giveaway text. Recover that
@@ -1244,6 +1258,13 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                         last_reason = 'code0_without_lottery_id'
                         break
                     last_reason = 'api_code:%s' % code
+                    if code == 4101152 and '动态不可见' in last_api_message:
+                        return {
+                            'confirmed': False,
+                            'retryable': False,
+                            'reason': 'dynamic_not_visible',
+                            'api_message': last_api_message,
+                        }
                     # -9999/429/412 等系统性错误重试会继续放大限流。
                     # 交给上层批级冷却，下一轮再验证该条。
                     if code in (-9999, -429, 429, -412, 412, -352, -509):

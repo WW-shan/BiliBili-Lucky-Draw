@@ -501,6 +501,43 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['retryable'])
         self.assertEqual(result['reason'], 'detail_unavailable')
 
+    def test_dynamic_not_visible_is_excluded_instead_of_retried(self):
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value=None)
+        share.last_api_reason = 'api_code:4101152'
+        share.last_api_message = '动态不可见'
+
+        result = share.fetch_official_lottery_notice(
+            Mock(), 'https://www.bilibili.com/opus/1270908237708787713', retries=1
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['reason'], 'dynamic_not_visible')
+        self.assertEqual(result['api_message'], '动态不可见')
+
+    def test_notice_api_dynamic_not_visible_is_excluded(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 4101152,
+            'message': '动态不可见',
+            'lottery_id': '',
+            'status': None,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={
+            'modules': {'module_dynamic': {'type': 'ADDITIONAL_TYPE_LOTTERY'}}
+        })
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/123', retries=3
+        )
+
+        self.assertFalse(result['confirmed'])
+        self.assertFalse(result['retryable'])
+        self.assertEqual(result['reason'], 'dynamic_not_visible')
+        self.assertEqual(browser.execute_async_script.call_count, 1)
+
     def test_notice_api_risk_control_code_stops_without_retry(self):
         browser = Mock()
         browser.execute_async_script.return_value = {

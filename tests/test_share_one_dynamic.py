@@ -1261,6 +1261,30 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'], result)
         self.assertIn('coin', result['required_actions'])
 
+    def test_empty_non_draw_api_body_is_recovered_from_opus_content(self):
+        share = DynamicShareBase()
+        item = {'modules': {'module_dynamic': {'desc': None}}}
+        share._fetch_dynamic_detail_item = Mock(return_value=item)
+        share.wait_page_ready = Mock()
+        share.get_dynamic_text = Mock(return_value='')
+        page_content = Mock()
+        page_content.get_attribute.return_value = (
+            '关注并转发，11月28日抽一位送耳机。'
+        )
+        browser = Mock()
+        browser.current_url = 'https://www.bilibili.com/'
+        browser.find_elements.return_value = [page_content]
+        browser.execute_async_script = Mock()
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1274109860959485957', retries=1
+        )
+
+        browser.get.assert_called_once_with('https://www.bilibili.com/opus/1274109860959485957')
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['source'], 'plain_text')
+        browser.execute_async_script.assert_not_called()
+
     def test_empty_draw_api_body_is_recovered_from_dynamic_page(self):
         share = DynamicShareBase()
         item = {'modules': {'module_dynamic': {

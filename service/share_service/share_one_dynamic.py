@@ -562,6 +562,27 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         title = (modules.get('module_title') or {}).get('text') if isinstance(modules, dict) else ''
         return ' '.join(part for part in (title, desc.get('text') or '') if part)
 
+    def _recover_opus_content_text(self, bro):
+        selectors = (
+            '.opus-module-content',
+            '.bili-opus__content',
+            '.bili-dyn-card',
+            '.bili-dyn-content',
+        )
+        best = ''
+        for selector in selectors:
+            try:
+                elements = bro.find_elements(By.CSS_SELECTOR, selector) or []
+                for element in elements:
+                    text = (
+                        element.get_attribute('innerText') or element.text or ''
+                    ).strip()
+                    if len(text) > len(best):
+                        best = text
+            except Exception:
+                continue
+        return best
+
     def _restore_draw_text_from_page(self, bro, item, source_url=None):
         """Fill missing body text for image/draw cards from the opus page."""
         if not isinstance(item, dict):
@@ -578,8 +599,6 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         else:
             module_dynamic = {}
         major = module_dynamic.get('major') or {}
-        if major.get('type') != 'MAJOR_TYPE_DRAW':
-            return False
         if source_url:
             try:
                 current_source = re.search(r'/(\d+)(?:\?|$)', str(bro.current_url))
@@ -593,10 +612,12 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     self.wait_page_ready(bro)
             except Exception:
                 return False
-        try:
-            body_text = self.get_dynamic_text(bro)
-        except Exception:
-            return False
+        body_text = self._recover_opus_content_text(bro)
+        if not body_text and major.get('type') == 'MAJOR_TYPE_DRAW':
+            try:
+                body_text = self.get_dynamic_text(bro)
+            except Exception:
+                body_text = ''
         body_text = str(body_text or '').strip()
         if not body_text:
             return False

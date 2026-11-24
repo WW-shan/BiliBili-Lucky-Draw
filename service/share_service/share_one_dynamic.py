@@ -211,9 +211,15 @@ class DynamicShareBase(object):
                 self.original_dynamic_text = self.get_dynamic_text(bro)
             except Exception:
                 self.original_dynamic_text = ''
-            if lottery_kind == 'plain_text':
-                # 普通动态抽奖没有官方 lottery_id，规则已在验证阶段保存。
-                self.lottery_source = 'plain_text'
+            saved_rule_text = str(lottery_rule or '').strip()
+            has_saved_rule = saved_rule_text not in ('', '{}', 'None', 'null')
+            if lottery_kind == 'plain_text' or has_saved_rule:
+                # The verification stage already established the executable
+                # rule. Re-querying here can transiently return missing_action
+                # and incorrectly undo a valid ready decision.
+                self.lottery_source = (
+                    'plain_text' if lottery_kind == 'plain_text' else 'verified_rule'
+                )
                 self.notice_lottery_time = self._coerce_datetime(lottery_end_time)
             else:
                 confirmed, reason = self.verify_official_lottery(bro, lucky_dynamic_url)

@@ -201,6 +201,34 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertGreaterEqual(share.get_visible_elements.call_count, 2)
 
+    def test_saved_official_text_rule_skips_second_official_query(self):
+        browser = Mock()
+        share = DynamicShareBase()
+        with patch.object(share, 'wait_page_ready'), patch.object(
+            share, 'resolve_lottery_time'
+        ), patch.object(share, 'is_expired_dynamic', return_value=False), patch.object(
+            share, 'ensure_publish_cookie'
+        ), patch.object(
+            share, 'verify_official_lottery', return_value=(False, 'missing_action')
+        ) as verify_official, patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            share.share_one(
+                browser,
+                Mock(),
+                'https://www.bilibili.com/opus/1274187758789722114',
+                'share',
+                'comment',
+                lottery_end_time='2026-12-01 23:59:00',
+                lottery_kind='official',
+                lottery_rule='{"text": "关注、评论、转发，抽一位送礼物"}',
+                required_actions='[]',
+            )
+
+        verify_official.assert_not_called()
+        self.assertEqual(share.share_status, 0)
+        self.assertIsNone(share.last_error)
+
     def test_share_flow_uses_opus_toolbar_and_confirms_forward(self):
         browser = Mock()
         chains = Mock()

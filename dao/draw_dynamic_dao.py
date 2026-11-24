@@ -59,6 +59,35 @@ class DrawDynamicDao(object):
         except Exception:
             return []
 
+    def verification_queue_counts(self, retry_minutes=15):
+        """Return total modern pending rows and rows eligible now."""
+        retry_minutes = max(0, int(retry_minutes))
+        sql = """
+        SELECT COUNT(*) AS total,
+               COALESCE(SUM(
+                   CASE
+                     WHEN c.scan_key IS NULL OR c.status <> '3'
+                          OR COALESCE(c.update_time, c.insert_time)
+                             <= NOW() - INTERVAL %s MINUTE
+                     THEN 1 ELSE 0
+                   END
+               ), 0) AS eligible
+        FROM t_draw_dynamic d
+        LEFT JOIN t_scan_cache c
+          ON c.scan_type = 'lottery' AND c.scan_url = d.dyn_url
+        WHERE d.status IN ('0', '3')
+          AND CAST(SUBSTRING_INDEX(d.dyn_url, '/', -1) AS UNSIGNED)
+              >= 1250000000000000000
+        """ % retry_minutes
+        try:
+            rows = self.db.select_db(sql) or []
+            row = rows[0] if rows else {}
+            total = int(row.get('total') or 0)
+            eligible = min(total, int(row.get('eligible') or 0))
+            return {'total': total, 'eligible': eligible}
+        except Exception:
+            return {'total': 0, 'eligible': 0}
+
     def query_by_dyn_url(self, dyn_url):
         try:
             sql = "SELECT * FROM " + self.table_name + " where dyn_url = '" + dyn_url + "'";

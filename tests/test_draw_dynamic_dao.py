@@ -70,6 +70,19 @@ class DrawDynamicDaoTests(unittest.TestCase):
         self.assertEqual(args, ('https://www.bilibili.com/opus/1271567562424975400',))
         db.con.commit.assert_called_once()
 
+    def test_verification_queue_counts_separate_cooldown_rows(self):
+        db = Mock()
+        db.select_db.return_value = [{'total': 5, 'eligible': 2}]
+        dao = DrawDynamicDao(db)
+
+        counts = dao.verification_queue_counts(retry_minutes=15)
+
+        self.assertEqual(counts, {'total': 5, 'eligible': 2})
+        sql = db.select_db.call_args.args[0].lower()
+        self.assertIn("d.status in ('0', '3')", sql)
+        self.assertIn("c.status <> '3'", sql)
+        self.assertIn('interval 15 minute', sql)
+
     def test_verification_priority_is_fair_round_robin(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]

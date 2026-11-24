@@ -7,6 +7,9 @@ import main
 
 
 class MainWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        main._last_discovery_monotonic = None
+
     def test_pipeline_runs_ready_actions_before_verification(self):
         events = []
         counts = iter([
@@ -65,6 +68,35 @@ class MainWorkflowTests(unittest.TestCase):
         ) as scanner:
             scanner.return_value.init_search.return_value = None
             main.run_pipeline_iteration()
+
+        scanner.return_value.init_search.assert_called_once_with()
+
+    def test_pipeline_discovers_while_pending_rows_are_cooling(self):
+        with patch.object(
+            main,
+            'get_queue_counts',
+            return_value={'ready': 0, 'pending': 0, 'blocked': 2},
+        ), patch.object(main, 'time') as clock, patch(
+            'main.SearchDynamicByUps'
+        ) as scanner:
+            clock.monotonic.return_value = 1000
+            scanner.return_value.init_search.return_value = None
+            self.assertTrue(main.run_pipeline_iteration())
+
+        scanner.return_value.init_search.assert_called_once_with()
+
+    def test_discovery_is_throttled_after_first_attempt(self):
+        with patch.object(
+            main,
+            'get_queue_counts',
+            return_value={'ready': 0, 'pending': 0, 'blocked': 1},
+        ), patch.object(main, 'time') as clock, patch(
+            'main.SearchDynamicByUps'
+        ) as scanner:
+            clock.monotonic.side_effect = [1000, 1001]
+            scanner.return_value.init_search.return_value = None
+            self.assertTrue(main.run_pipeline_iteration())
+            self.assertFalse(main.run_pipeline_iteration())
 
         scanner.return_value.init_search.assert_called_once_with()
 

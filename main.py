@@ -14,17 +14,36 @@ from utils.webdriver_util import cleanup_stale_selenium_sessions
 
 mylogger = MyLogger('main.py').getLogger()
 _workflow_paused = False
+_last_discovery_monotonic = None
 
 
 def get_queue_counts():
-    """Read the small amount of state needed to schedule the next step."""
+    """Read ready, eligible-pending, and cooling-pending queue counts."""
     verify_service = VerifyLotteryService(globals.my_user_id)
+    queue = verify_service.draw_dao.verification_queue_counts(
+        retry_minutes=VerifyLotteryService.RETRY_BACKOFF_MINUTES
+    )
+    pending = int(queue.get('eligible') or 0)
+    total = int(queue.get('total') or 0)
     return {
         'ready': len(verify_service.ready_dao.query_ready(limit=1) or []),
-        'pending': len(
-            verify_service.draw_dao.query_by_verification_priority(limit=1) or []
-        ),
+        'pending': pending,
+        'blocked': max(0, total - pending),
     }
+
+
+def _discovery_due():
+    """Throttle idle discovery without blocking verification retries."""
+    global _last_discovery_monotonic
+    now = time.monotonic()
+    interval = VerifyLotteryService.RETRY_BACKOFF_MINUTES * 60
+    if (
+        _last_discovery_monotonic is None
+        or now - _last_discovery_monotonic >= interval
+    ):
+        _last_discovery_monotonic = now
+        return True
+    return False
 
 
 def run_actions():
@@ -82,9 +101,9 @@ def run_pipeline_iteration():
             progressed = True
         return progressed
 
-    # Verification may have been empty because all pending rows are cooling;
-    # only discover when both queues are actually empty.
-    if not (get_queue_counts().get('ready') or 0):
+    # All remaining pending rows are cooling. Keep discovery alive on a small
+    # throttle so one permanently ambiguous row cannot starve new work.
+    if _discovery_due():
         run_discovery()
         progressed = True
     return progressed

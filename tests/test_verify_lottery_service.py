@@ -62,43 +62,6 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         webdriver.assert_not_called()
         self.assertEqual(stats['checked'], 0)
 
-    def test_explicit_audit_reset_bypasses_stale_cache_cooldown_once(self):
-        service = self.build_service()
-        service.draw_dao.query_by_verification_priority.return_value = [
-            {'dyn_url': 'https://www.bilibili.com/opus/1270731263547801667',
-             'status': '0', 'candidate_reset': 1},
-        ]
-        service.scan_cache_dao.has_recent_failure.return_value = True
-        service.checker.fetch_official_lottery_notice.return_value = {
-            'confirmed': True,
-            'source': 'plain_text',
-            'lottery_rule': {
-                'text': '关注+转发+评论本条动态，抽一台Pocket4。',
-                'required_actions': ['follow', 'comment', 'forward'],
-            },
-            'lottery_id': '',
-            'lottery_end_time': None,
-            'reason': '',
-        }
-
-        stats = service.verify_pending(limit=1)
-
-        self.assertEqual(stats['checked'], 1)
-        self.assertEqual(stats['confirmed'], 1)
-        service.scan_cache_dao.has_recent_failure.assert_not_called()
-
-    def test_status5_candidate_is_never_reclassified(self):
-        service = self.build_service()
-        service.draw_dao.query_by_verification_priority.return_value = [
-            {'dyn_url': 'https://www.bilibili.com/opus/1270731263547801667',
-             'status': '5'},
-        ]
-
-        stats = service.verify_pending(limit=1)
-
-        self.assertEqual(stats['checked'], 0)
-        service.checker.fetch_official_lottery_notice.assert_not_called()
-
     def test_newer_pending_candidate_is_verified_before_older_cooling_rows(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [

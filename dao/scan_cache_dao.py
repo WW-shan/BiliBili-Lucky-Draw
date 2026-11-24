@@ -75,6 +75,14 @@ class ScanCacheDao(object):
     def save_failure(self, scan_type, scan_url, source, note, error):
         self._upsert(scan_type, scan_url, source, note, '3', 0, str(error)[:500])
 
+    def delete(self, scan_type, scan_url):
+        self.db.con.ping(reconnect=True)
+        self.db.cur.execute(
+            'DELETE FROM %s WHERE scan_key = %%s' % self.table_name,
+            (self.build_key(scan_type, scan_url),),
+        )
+        self.db.con.commit()
+
     def _upsert(self, scan_type, scan_url, source, note, status, link_count, error):
         now = datetime.now()
         sql = """

@@ -132,12 +132,7 @@ class VerifyLotteryService(object):
                     self.draw_dao.update_sharedUrl(url=url, status='5')
                     stats['skipped_recent'] += 1
                     continue
-            # A manually audited row may have been re-opened as status 0
-            # while its old cache entry still says the previous pass failed.
-            # Give explicit audit resets one fresh attempt; normal automatic
-            # retries continue to honor the per-URL cooldown.
-            cache_reset = str(candidate.get('candidate_reset') or '') == '1'
-            if not cache_reset and self.scan_cache_dao.has_recent_failure(
+            if self.scan_cache_dao.has_recent_failure(
                 'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
             ):
                 stats['skipped_recent'] += 1

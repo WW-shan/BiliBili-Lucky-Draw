@@ -41,8 +41,7 @@ class DrawDynamicDao(object):
         """轮转验证队列：从未尝试的最先，其次最久未尝试的。"""
         limit = max(1, int(limit))
         sql = """
-        SELECT d.*, c.update_time AS lottery_checked_at,
-               1 AS candidate_reset
+        SELECT d.*, c.update_time AS lottery_checked_at
         FROM t_draw_dynamic d
         LEFT JOIN t_scan_cache c
           ON c.scan_type = 'lottery' AND c.scan_url = d.dyn_url

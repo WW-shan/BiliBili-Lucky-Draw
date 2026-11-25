@@ -9,6 +9,8 @@ import main
 class MainWorkflowTests(unittest.TestCase):
     def setUp(self):
         main._last_discovery_monotonic = None
+        main._workflow_paused = False
+        main._workflow_pause_until = 0.0
 
     def test_pipeline_runs_ready_actions_before_verification(self):
         events = []
@@ -100,6 +102,26 @@ class MainWorkflowTests(unittest.TestCase):
 
         scanner.return_value.init_search.assert_called_once_with()
 
+    def test_discovery_uses_configured_interval_instead_of_verification_backoff(self):
+        now = [1000.0]
+        with patch.object(
+            main,
+            'get_queue_counts',
+            return_value={'ready': 0, 'pending': 0, 'blocked': 1},
+        ), patch.object(main, 'time') as clock, patch.object(
+            globals, 'discovery_interval_hours', 1
+        ), patch('main.SearchDynamicByUps') as scanner:
+            clock.monotonic.side_effect = lambda: now[0]
+            scanner.return_value.init_search.return_value = None
+
+            self.assertTrue(main.run_pipeline_iteration())
+            now[0] += 901
+            self.assertFalse(main.run_pipeline_iteration())
+            now[0] += 2699
+            self.assertTrue(main.run_pipeline_iteration())
+
+        self.assertEqual(scanner.return_value.init_search.call_count, 2)
+
     def test_pipeline_reports_no_progress_when_only_cooling_rows_remain(self):
         counts = iter([
             {'ready': 0, 'pending': 5},
@@ -159,18 +181,28 @@ class MainWorkflowTests(unittest.TestCase):
         self.assertFalse(main._workflow_paused)
         self.assertEqual(cycle.call_count, 2)
 
-    def test_verification_block_pauses_future_automatic_cycles(self):
-        with patch.object(main, '_workflow_paused', False):
-            with patch.object(
-                main,
-                'run_pipeline_iteration',
-                side_effect=BilibiliVerificationRequired('manual check'),
-            ) as cycle:
-                main.run_safely()
-                self.assertTrue(main._workflow_paused)
+    def test_verification_block_enters_timed_cooldown_and_auto_recovers(self):
+        now = [1000.0]
+        with patch.object(
+            main,
+            'run_pipeline_iteration',
+            side_effect=[BilibiliVerificationRequired('manual check'), None],
+        ) as cycle, patch.object(globals, 'verification_cooldown_minutes', 30), patch.object(
+            main, 'time'
+        ) as clock:
+            clock.monotonic.side_effect = lambda: now[0]
 
-                main.run_safely()
-                cycle.assert_called_once()
+            self.assertFalse(main.run_safely())
+            self.assertGreater(main._workflow_pause_until, now[0])
+            self.assertFalse(main._workflow_paused)
+
+            self.assertFalse(main.run_safely())
+            self.assertEqual(cycle.call_count, 1)
+
+            now[0] += 1801
+            self.assertIsNone(main.run_safely())
+            self.assertEqual(cycle.call_count, 2)
+            self.assertEqual(main._workflow_pause_until, 0.0)
 
 
 if __name__ == '__main__':

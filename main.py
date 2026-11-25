@@ -14,6 +14,7 @@ from utils.webdriver_util import cleanup_stale_selenium_sessions
 
 mylogger = MyLogger('main.py').getLogger()
 _workflow_paused = False
+_workflow_pause_until = 0.0
 _last_discovery_monotonic = None
 
 
@@ -36,7 +37,7 @@ def _discovery_due():
     """Throttle idle discovery without blocking verification retries."""
     global _last_discovery_monotonic
     now = time.monotonic()
-    interval = VerifyLotteryService.RETRY_BACKOFF_MINUTES * 60
+    interval = max(1, int(globals.discovery_interval_hours)) * 3600
     if (
         _last_discovery_monotonic is None
         or now - _last_discovery_monotonic >= interval
@@ -110,17 +111,28 @@ def run_pipeline_iteration():
 
 
 def _run_safely(job):
-    global _workflow_paused
+    global _workflow_paused, _workflow_pause_until
     if _workflow_paused:
-        return
+        return False
+    now = time.monotonic()
+    if _workflow_pause_until and _workflow_pause_until > now:
+        return False
     try:
-        return job()
+        result = job()
+        if _workflow_pause_until:
+            _workflow_pause_until = 0.0
+        return result
     except BilibiliVerificationRequired as exc:
-        _workflow_paused = True
-        mylogger.error(
-            'Bilibili 当前要求人工验证；自动任务已暂停。完成验证后重启 worker 恢复：%s',
+        cooldown_seconds = max(
+            1, int(globals.verification_cooldown_minutes)
+        ) * 60
+        _workflow_pause_until = time.monotonic() + cooldown_seconds
+        mylogger.warning(
+            'Bilibili 返回验证/412；自动任务冷却 %s 分钟后用新会话恢复：%s',
+            globals.verification_cooldown_minutes,
             exc,
         )
+        return False
     except BilibiliAuthenticationRequired as exc:
         _workflow_paused = True
         mylogger.error(

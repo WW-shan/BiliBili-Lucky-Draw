@@ -551,6 +551,28 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             scanner.dynLinks_to_db.call_args.args[0], [giveaway_url, direct_url]
         )
 
+    def test_forward_feed_uses_neutral_origin_instead_of_rate_limited_space_page(self):
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner._open_page = Mock()
+        scanner.extract_feed_snapshot_from_api = Mock(return_value={'code': 0, 'items': []})
+        scanner.select_feed_giveaway_entries = Mock(return_value=[])
+        scanner.dynLinks_to_db = Mock()
+        browser = Mock()
+
+        scanner.search_dynamic_links_by_up(
+            browser,
+            'https://space.bilibili.com/280604312/dynamic',
+            '抽奖工具人转发池',
+            open_space_page=False,
+        )
+
+        scanner._open_page.assert_called_once_with(
+            browser, 'https://www.bilibili.com/'
+        )
+        scanner.extract_feed_snapshot_from_api.assert_called_once_with(
+            browser, '280604312'
+        )
+
     def test_existing_terminal_states_are_not_reactivated_by_rescan(self):
         scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
         scanner.count = 0

@@ -776,8 +776,11 @@ class SearchDynamicByUps(object):
             raise
         SearchDynamicByUps.ensure_page_access(browser, url)
 
-    def search_dynamic_links_by_up(self, browser, base_url, note):
-        self._open_page(browser, base_url)
+    def search_dynamic_links_by_up(
+        self, browser, base_url, note, open_space_page=True
+    ):
+        page_url = base_url if open_space_page else 'https://www.bilibili.com/'
+        self._open_page(browser, page_url)
         up_match = re.search(r'space\.bilibili\.com/(\d+)', base_url)
         if not up_match:
             raise RuntimeError('无法从订阅地址解析 UP UID：%s' % base_url)
@@ -787,7 +790,7 @@ class SearchDynamicByUps(object):
         except TimeoutException:
             mylogger.warning('空间动态接口超时，重载页面后重试一次：%s', note)
             browser.get('about:blank')
-            self._open_page(browser, base_url)
+            self._open_page(browser, page_url)
             snapshot = self.extract_feed_snapshot_from_api(browser, up_id)
 
         source_is_forward_pool = note in self.FORWARD_POOL_SOURCES
@@ -839,6 +842,10 @@ class SearchDynamicByUps(object):
             spec = self.SOURCE_SPECS.get(note)
             if spec and spec.get('mode') in ('readlists', 'year_readlist'):
                 self.search_readlist_source(browser, spec, note)
+            elif spec and spec.get('mode') == 'forward_feed':
+                self.search_dynamic_links_by_up(
+                    browser, base_url, note, open_space_page=False
+                )
             else:
                 self.search_dynamic_links_by_up(browser, base_url, note)
         except BilibiliVerificationRequired:

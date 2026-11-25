@@ -39,6 +39,21 @@ class DrawDynamicDaoTests(unittest.TestCase):
         self.assertEqual(update_args, ('5', '%/1268647448530649174', 'https://www.bilibili.com/opus/1268647448530649174'))
         db.con.commit.assert_called_once()
 
+    def test_query_by_dynamic_id_matches_both_url_forms(self):
+        db = Mock()
+        db.select_db.return_value = [{
+            'dyn_url': 'https://t.bilibili.com/1268647448530649174',
+            'status': '5',
+        }]
+        dao = DrawDynamicDao(db)
+
+        row = dao.query_by_dynamic_id('1268647448530649174')
+
+        self.assertEqual(row, db.select_db.return_value[0])
+        sql = db.select_db.call_args.args[0].lower()
+        self.assertIn('substring_index', sql)
+        self.assertIn("'1268647448530649174'", sql)
+
     def test_successful_share_marks_all_url_forms_completed(self):
         db = Mock()
         dao = DrawDynamicDao(db)

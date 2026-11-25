@@ -96,6 +96,22 @@ class DrawDynamicDao(object):
         except Exception as e:
             return {}
 
+    def query_by_dynamic_id(self, dynamic_id):
+        """Return any stored URL form for one dynamic id."""
+        dynamic_id = str(dynamic_id or '').strip()
+        if not dynamic_id.isdigit():
+            return None
+        sql = (
+            "SELECT * FROM " + self.table_name
+            + " WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(dyn_url, '/', -1), '?', 1) = '"
+            + dynamic_id + "' LIMIT 1"
+        )
+        try:
+            rows = self.db.select_db(sql) or []
+            return rows[0] if rows else None
+        except Exception:
+            return None
+
     def insert(self, dyn_url, source, note):
         try:
             params = {}

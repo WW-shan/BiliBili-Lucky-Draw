@@ -93,6 +93,9 @@ detail_request_max_seconds = max(
     detail_request_min_seconds,
     int(os.getenv("DETAIL_REQUEST_MAX_SECONDS", "6")),
 )
+tobili_catalog_enabled = os.getenv(
+    "TOBILI_CATALOG_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes", "y")
 # Read-only verification traffic can use a separate egress.  Login and social
 # actions deliberately keep using the direct VPS egress.
 verification_proxy_url = os.getenv("VERIFICATION_PROXY_URL", "").strip()

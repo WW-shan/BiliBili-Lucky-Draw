@@ -1,8 +1,14 @@
+import json
+import os
 import re
 import time
 import unicodedata
 from datetime import datetime, timedelta
+from datetime import timezone
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
+
+import requests
 
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
@@ -94,6 +100,11 @@ class SearchDynamicByUps(object):
         'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space'
         '?host_mid=%s&offset=&timezone_offset=-480'
     )
+    TOBILI_CATALOG_API = 'https://tobili.4wdo.cn/public/v1/catalog'
+    TOBILI_CATALOG_SOURCE = 'https://tobili.4wdo.cn/public/'
+    TOBILI_CATALOG_NOTE = 'toBili公开目录'
+    TOBILI_CATALOG_STATE_PATH = '/app/Log/tobili_catalog_cursor.json'
+    TOBILI_CATALOG_MAX_PAGES = 100
     FEED_API_SCRIPT = r'''
         const endpoint = arguments[0];
         const done = arguments[1];
@@ -209,6 +220,138 @@ class SearchDynamicByUps(object):
         self.statistics_dao = StatisticsDao(db)
         self.scan_cache_skip_count = 0
         self.scan_cache_retry_skip_count = 0
+
+    @staticmethod
+    def _catalog_datetime(value):
+        if not value:
+            return None
+        text = str(value).strip()
+        if text.endswith('Z'):
+            text = text[:-1] + '+00:00'
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def select_tobili_catalog_links(cls, rows, now=None, days=7):
+        """Filter the public catalog down to current, reviewable Bili posts."""
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        cutoff = now - timedelta(days=max(1, int(days)))
+        links = []
+        seen = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            dynamic_id = str(row.get('dyn_id') or '').strip()
+            if not dynamic_id.isdigit() or dynamic_id in seen:
+                continue
+            if str(row.get('kind') or '').strip().lower() == 'check_in':
+                continue
+            if not str(row.get('reward') or '').strip():
+                continue
+            published = cls._catalog_datetime(row.get('published_at'))
+            if published is None or published < cutoff or published > now + timedelta(days=1):
+                continue
+            deadline = cls._catalog_datetime(row.get('deadline_at'))
+            if deadline is None and row.get('deadline_date'):
+                deadline = cls._catalog_datetime(
+                    str(row.get('deadline_date')) + 'T23:59:59+08:00'
+                )
+            if deadline is not None and deadline <= now:
+                continue
+            seen.add(dynamic_id)
+            links.append('https://www.bilibili.com/opus/' + dynamic_id)
+        return links
+
+    @staticmethod
+    def fetch_tobili_catalog_page(after, limit):
+        response = requests.get(
+            SearchDynamicByUps.TOBILI_CATALOG_API,
+            params={'after': int(after), 'limit': int(limit)},
+            headers={'Accept': 'application/json'},
+            timeout=25,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError('公开目录返回格式异常')
+        return payload
+
+    @staticmethod
+    def _load_tobili_catalog_cursor(state_path):
+        try:
+            payload = json.loads(Path(state_path).read_text(encoding='utf-8'))
+            cursor = int(payload.get('cursor') or 0)
+            return max(0, cursor)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return 0
+
+    @staticmethod
+    def _save_tobili_catalog_cursor(state_path, cursor):
+        path = Path(state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            'cursor': max(0, int(cursor)),
+            'last_success': int(time.time()),
+        }
+        tmp_path = path.with_suffix(path.suffix + '.tmp')
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding='utf-8'
+        )
+        os.replace(tmp_path, path)
+
+    def search_tobili_catalog(
+        self,
+        page_fetcher=None,
+        state_path=None,
+        now=None,
+    ):
+        """Fetch catalog revisions incrementally and enqueue new activities."""
+        page_fetcher = page_fetcher or self.fetch_tobili_catalog_page
+        state_path = state_path or self.TOBILI_CATALOG_STATE_PATH
+        cursor = self._load_tobili_catalog_cursor(state_path)
+        rows = []
+        final_cursor = cursor
+        for _ in range(self.TOBILI_CATALOG_MAX_PAGES):
+            payload = page_fetcher(cursor, 100)
+            if not isinstance(payload, dict):
+                raise RuntimeError('公开目录返回格式异常')
+            rows.extend(payload.get('items') or [])
+            next_cursor = payload.get('next')
+            try:
+                next_cursor = int(next_cursor)
+            except (TypeError, ValueError):
+                next_cursor = cursor
+            if next_cursor < cursor:
+                raise RuntimeError('公开目录游标回退')
+            final_cursor = next_cursor
+            if not payload.get('more') or next_cursor == cursor:
+                break
+            cursor = next_cursor
+        links = self.select_tobili_catalog_links(rows, now=now)
+        if links:
+            self.dynLinks_to_db(
+                links,
+                self.TOBILI_CATALOG_SOURCE,
+                self.TOBILI_CATALOG_NOTE,
+            )
+        self._save_tobili_catalog_cursor(state_path, final_cursor)
+        return links
+
+    def refresh_tobili_catalog_safely(self):
+        if not getattr(globals, 'tobili_catalog_enabled', True):
+            return []
+        try:
+            return self.search_tobili_catalog()
+        except Exception:
+            mylogger.warning('toBili 公开目录更新失败，继续扫描 B 站来源', exc_info=True)
+            return []
 
     def should_scan_detail_page(self, detail_url):
         if self.scan_cache_dao.has_success('detail', detail_url):
@@ -873,6 +1016,14 @@ class SearchDynamicByUps(object):
             try:
                 existing = self.draw_dynamic_dao.query_by_dyn_url(normalized)
                 if not existing:
+                    match = re.search(r'/(\d+)(?:\?|$)', normalized)
+                    alternate = (
+                        self.draw_dynamic_dao.query_by_dynamic_id(match.group(1))
+                        if match else None
+                    )
+                    if isinstance(alternate, (dict, list)) and alternate:
+                        existing = alternate
+                if not existing:
                     self.draw_dynamic_dao.insert(normalized, source, note)
                     cnt += 1
             except Exception as exc:
@@ -883,6 +1034,7 @@ class SearchDynamicByUps(object):
     def init_search(self):
         browser = None
         try:
+            self.refresh_tobili_catalog_safely()
             browser, chains = init_webdriver(
                 proxy_url=globals.verification_proxy_url or None
             )

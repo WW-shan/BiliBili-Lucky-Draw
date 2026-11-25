@@ -1,6 +1,9 @@
 import unittest
 import json
+import tempfile
 from datetime import datetime, timedelta
+from datetime import timezone
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from selenium.common.exceptions import TimeoutException
@@ -573,6 +576,117 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             browser, '280604312'
         )
 
+    def test_public_catalog_selection_filters_inactive_and_non_social_items(self):
+        now = datetime(2026, 11, 25, 6, 0, tzinfo=timezone.utc)
+        rows = [
+            {
+                'dyn_id': '1274168212378877955',
+                'published_at': '2026-11-24T07:03:25Z',
+                'deadline_at': '2026-12-01T07:00:00Z',
+                'kind': 'share',
+                'reward': '50元京东卡 × 5份',
+            },
+            {
+                'dyn_id': '1274168212378877955',
+                'published_at': '2026-11-24T07:03:25Z',
+                'deadline_at': '2026-12-01T07:00:00Z',
+                'kind': 'share',
+                'reward': '重复记录',
+            },
+            {
+                'dyn_id': '1274124927663865857',
+                'published_at': '2026-11-24T04:15:27Z',
+                'deadline_at': '2026-11-20T09:00:00Z',
+                'kind': 'share',
+                'reward': '已过期',
+            },
+            {
+                'dyn_id': '1274120980631912457',
+                'published_at': '2026-11-24T04:00:08Z',
+                'deadline_at': '2026-12-08T02:00:00Z',
+                'kind': 'check_in',
+                'reward': '打卡任务',
+            },
+            {
+                'dyn_id': '1272307769977864198',
+                'published_at': '2026-11-01T06:43:57Z',
+                'deadline_at': '2026-12-18T10:00:00Z',
+                'kind': 'share',
+                'reward': '发布超过七天',
+            },
+        ]
+
+        links = SearchDynamicByUps.select_tobili_catalog_links(rows, now=now)
+
+        self.assertEqual(
+            links,
+            ['https://www.bilibili.com/opus/1274168212378877955'],
+        )
+
+    def test_public_catalog_refresh_resumes_saved_cursor(self):
+        now = datetime(2026, 11, 25, 6, 0, tzinfo=timezone.utc)
+        calls = []
+        pages = {
+            0: {
+                'items': [{
+                    'dyn_id': '1274168212378877955',
+                    'published_at': '2026-11-24T07:03:25Z',
+                    'deadline_at': '2026-12-01T07:00:00Z',
+                    'kind': 'share',
+                    'reward': '50元京东卡 × 5份',
+                }],
+                'next': 5,
+                'more': True,
+            },
+            5: {'items': [], 'next': 7, 'more': False},
+            7: {'items': [], 'next': 7, 'more': False},
+        }
+
+        def fetch(after, limit):
+            calls.append((after, limit))
+            return pages[after]
+
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.dynLinks_to_db = Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / 'catalog.json'
+            scanner.search_tobili_catalog(
+                page_fetcher=fetch, state_path=state_path, now=now
+            )
+            scanner.search_tobili_catalog(
+                page_fetcher=fetch, state_path=state_path, now=now
+            )
+            state = json.loads(state_path.read_text())
+
+        self.assertEqual(calls, [(0, 100), (5, 100), (7, 100)])
+        scanner.dynLinks_to_db.assert_called_once_with(
+            ['https://www.bilibili.com/opus/1274168212378877955'],
+            'https://tobili.4wdo.cn/public/',
+            'toBili公开目录',
+        )
+        self.assertEqual(state['cursor'], 7)
+
+    def test_dynamic_links_skip_existing_alternate_url_form(self):
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.draw_dynamic_dao = Mock()
+        scanner.draw_dynamic_dao.query_by_dyn_url.return_value = []
+        scanner.draw_dynamic_dao.query_by_dynamic_id.return_value = [{
+            'dyn_url': 'https://t.bilibili.com/1274168212378877955',
+            'status': '5',
+        }]
+
+        scanner.dynLinks_to_db(
+            ['https://www.bilibili.com/opus/1274168212378877955'],
+            'https://tobili.4wdo.cn/public/',
+            'toBili公开目录',
+        )
+
+        scanner.draw_dynamic_dao.insert.assert_not_called()
+
     def test_existing_terminal_states_are_not_reactivated_by_rescan(self):
         scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
         scanner.count = 0
@@ -662,7 +776,9 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             scanner,
             'search_configured_up',
             side_effect=[RuntimeError('source timeout'), None],
-        ) as search_up, patch.object(globals, 'ups', ['100680137', '226257459']):
+        ) as search_up, patch.object(
+            globals, 'ups', ['100680137', '226257459']
+        ), patch.object(globals, 'tobili_catalog_enabled', False):
             scanner.init_search()
 
         self.assertEqual(search_up.call_count, 2)
@@ -689,7 +805,7 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             side_effect=lambda *args: events.append('scan'),
         ) as search_up, patch(
             'service.login_service.login_service.LoginService.login_by_cookie'
-        ) as login:
+        ) as login, patch.object(globals, 'tobili_catalog_enabled', False):
             login.side_effect = lambda *args: events.append('login')
             with patch.object(globals, 'ups', ['100680137']):
                 scanner.init_search()

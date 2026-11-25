@@ -641,7 +641,7 @@ class SearchDynamicRegressionTests(unittest.TestCase):
         with patch(
             'service.search_draw_dynamic_service.SearchDynamicByUps.init_webdriver',
             return_value=(browser, Mock()),
-        ), patch.object(
+        ) as webdriver, patch.object(
             scanner,
             'search_configured_up',
             side_effect=lambda *args: events.append('scan'),
@@ -654,6 +654,9 @@ class SearchDynamicRegressionTests(unittest.TestCase):
 
         search_up.assert_called_once_with(browser, '100680137')
         login.assert_called_once()
+        webdriver.assert_called_once_with(
+            proxy_url=globals.verification_proxy_url or None
+        )
         self.assertEqual(events, ['login', 'scan'])
         browser.quit.assert_called_once()
 

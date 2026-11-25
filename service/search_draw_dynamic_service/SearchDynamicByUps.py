@@ -848,7 +848,9 @@ class SearchDynamicByUps(object):
     def init_search(self):
         browser = None
         try:
-            browser, chains = init_webdriver()
+            browser, chains = init_webdriver(
+                proxy_url=globals.verification_proxy_url or None
+            )
             LoginService(browser, chains, self.user_id).login_by_cookie()
             configured_sources = globals.ups or []
             mylogger.info(

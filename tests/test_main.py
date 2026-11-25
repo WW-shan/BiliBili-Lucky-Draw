@@ -12,6 +12,23 @@ class MainWorkflowTests(unittest.TestCase):
         main._workflow_paused = False
         main._workflow_pause_until = 0.0
 
+    def test_ready_check_uses_accounts_configured_for_actions(self):
+        with patch.dict('os.environ', {'multi_users': '123|456'}), patch(
+            'main.VerifyLotteryService'
+        ) as verifier:
+            service = verifier.return_value
+            service.draw_dao.verification_queue_counts.return_value = {
+                'eligible': 0, 'total': 0,
+            }
+            service.ready_dao.query_ready.side_effect = [[], [{'dyn_url': 'example'}]]
+
+            self.assertEqual(main.get_queue_counts()['ready'], 1)
+
+        self.assertEqual(
+            [call.kwargs for call in service.ready_dao.query_ready.call_args_list],
+            [{'limit': 1, 'user_id': '123'}, {'limit': 1, 'user_id': '456'}],
+        )
+
     def test_pipeline_runs_ready_actions_before_verification(self):
         events = []
         counts = iter([
@@ -61,10 +78,9 @@ class MainWorkflowTests(unittest.TestCase):
 
             main.run_pipeline_iteration()
 
-        self.assertEqual(events, ['verify', 'share'])
-        scanner.assert_not_called()
+        self.assertEqual(events, ['verify', 'share', 'discover'])
 
-    def test_pipeline_discovers_only_when_both_queues_are_empty(self):
+    def test_pipeline_discovers_when_both_queues_are_empty(self):
         with patch.object(main, 'get_queue_counts', return_value={'ready': 0, 'pending': 0}), patch(
             'main.SearchDynamicByUps'
         ) as scanner:
@@ -130,7 +146,7 @@ class MainWorkflowTests(unittest.TestCase):
         ])
         with patch.object(main, 'get_queue_counts', side_effect=lambda: next(counts)), patch(
             'main.VerifyLotteryService'
-        ) as verifier:
+        ) as verifier, patch.object(main, '_discovery_due', return_value=False):
             verifier.return_value.verify_pending.return_value = {
                 'checked': 0, 'confirmed': 0, 'excluded': 0, 'deferred': 0,
                 'expired': 0, 'skipped_recent': 5, 'cooldown_started': 0,
@@ -159,7 +175,9 @@ class MainWorkflowTests(unittest.TestCase):
         ])
         with patch.object(main, 'get_queue_counts', side_effect=lambda: next(counts)), patch(
             'main.VerifyLotteryService'
-        ) as verifier, patch.object(main, 'time') as clock:
+        ) as verifier, patch.object(main, 'time') as clock, patch.object(
+            main, 'run_discovery'
+        ) as discover:
             verifier.return_value.verify_pending.return_value = {
                 'checked': 3, 'confirmed': 0, 'excluded': 0, 'deferred': 3,
                 'expired': 0, 'cooldown_started': 1,
@@ -168,6 +186,7 @@ class MainWorkflowTests(unittest.TestCase):
 
         self.assertFalse(progressed)
         clock.sleep.assert_not_called()
+        discover.assert_not_called()
 
     def test_transient_selenium_session_failure_does_not_pause_worker(self):
         with patch.object(main, '_workflow_paused', False), patch.object(

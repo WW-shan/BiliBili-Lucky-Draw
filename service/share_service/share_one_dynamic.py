@@ -2614,8 +2614,12 @@ fetch('https://api.bilibili.com/x/relation?fid=' + encodeURIComponent(fid), {cre
         :return:
         """
         try:
-            self.wait_css(bro, 'bili-comments', timeout=20)
-            editor = WebDriverWait(bro, 10).until(lambda driver: self.find_comment_editor(driver))
+            comments = self.wait_css(bro, 'bili-comments', timeout=20)
+            bro.execute_script("arguments[0].scrollIntoView({block: 'center'});", comments)
+            try:
+                editor = WebDriverWait(bro, 10).until(self.find_comment_editor)
+            except TimeoutException as exc:
+                raise RuntimeError('评论区已加载，但评论输入框不可用') from exc
             self.click_by_js(bro, editor)
             editor.send_keys(str(comment_content))
             random_sleep(start=1, end=2)

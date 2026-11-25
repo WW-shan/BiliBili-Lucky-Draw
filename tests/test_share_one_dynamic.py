@@ -1864,6 +1864,23 @@ class ShareOneDynamicTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, '评论提交后未确认'):
                 share.commit_comment(browser, Mock(), 'hello')
 
+    def test_comment_does_not_submit_when_editor_is_hidden(self):
+        share = DynamicShareBase()
+        browser = Mock()
+        comments = Mock()
+        share.wait_css = Mock(return_value=comments)
+        share.click_by_js = Mock()
+
+        with patch('service.share_service.share_one_dynamic.WebDriverWait') as wait:
+            wait.return_value.until.side_effect = TimeoutException()
+            with self.assertRaisesRegex(RuntimeError, '评论输入框不可用'):
+                share.commit_comment(browser, Mock(), 'hello')
+
+        browser.execute_script.assert_called_once_with(
+            "arguments[0].scrollIntoView({block: 'center'});", comments,
+        )
+        share.click_by_js.assert_not_called()
+
     def test_comment_editor_timeout_marks_participation_incomplete(self):
         share = DynamicShareBase()
         browser = Mock()

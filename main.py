@@ -26,15 +26,19 @@ def get_queue_counts():
     )
     pending = int(queue.get('eligible') or 0)
     total = int(queue.get('total') or 0)
+    ready = any(
+        verify_service.ready_dao.query_ready(limit=1, user_id=user_id)
+        for user_id in globals.get_multi_infos('multi_users')
+    )
     return {
-        'ready': len(verify_service.ready_dao.query_ready(limit=1) or []),
+        'ready': int(ready),
         'pending': pending,
         'blocked': max(0, total - pending),
     }
 
 
 def _discovery_due():
-    """Throttle idle discovery without blocking verification retries."""
+    """Run discovery on its own interval, even with pending work."""
     global _last_discovery_monotonic
     now = time.monotonic()
     interval = max(1, int(globals.discovery_interval_hours)) * 3600
@@ -71,7 +75,6 @@ def run_pipeline_iteration():
     """One continuous unit of work: drain ready work, verify, then discover."""
     counts = get_queue_counts()
     ready = counts.get('ready', 0)
-    pending = counts.get('pending', 0)
     progressed = False
 
     if ready:
@@ -90,7 +93,7 @@ def run_pipeline_iteration():
         # worker here: other pending entries and ready actions must continue.
         if stats.get('cooldown_started'):
             return False
-        progressed = bool(
+        progressed = progressed or bool(
             stats.get('checked')
             or stats.get('confirmed')
             or stats.get('excluded')
@@ -100,10 +103,8 @@ def run_pipeline_iteration():
         if (get_queue_counts().get('ready') or 0):
             _share_ready_queue()
             progressed = True
-        return progressed
 
-    # All remaining pending rows are cooling. Keep discovery alive on a small
-    # throttle so one permanently ambiguous row cannot starve new work.
+    # An endless backlog of retries must not prevent discovery of new work.
     if _discovery_due():
         run_discovery()
         progressed = True

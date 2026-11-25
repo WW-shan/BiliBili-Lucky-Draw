@@ -117,11 +117,14 @@ class VerifyLotteryServiceTests(unittest.TestCase):
 
     def test_confirmed_and_explicit_non_lottery_are_moved_to_separate_queues(self):
         service = self.build_service()
+        deadline = (datetime.now(SHANGHAI_TZ) + timedelta(days=2)).strftime(
+            '%Y-%m-%d %H:%M:%S'
+        )
         service.checker.fetch_official_lottery_notice.side_effect = [
             {
                 'confirmed': True,
                 'lottery_id': '456',
-                'lottery_end_time': '2026-11-25 20:00:00',
+                'lottery_end_time': deadline,
                 'reason': '',
             },
             {
@@ -145,7 +148,7 @@ class VerifyLotteryServiceTests(unittest.TestCase):
         service.ready_dao.upsert.assert_called_once_with(
             'https://www.bilibili.com/opus/1',
             '456',
-            '2026-11-25 20:00:00',
+            deadline,
             lottery_kind='official',
             lottery_rule='',
             required_actions='',

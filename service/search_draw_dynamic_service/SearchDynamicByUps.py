@@ -89,6 +89,7 @@ class SearchDynamicByUps(object):
     GIVEAWAY_MARKERS = ('抽奖', '福利', '奖品', '抽取', '有奖', '中奖')
     FEED_ITEM_MAX_AGE_DAYS = 7
     MIN_CURRENT_DYNAMIC_ID = 1_250_000_000_000_000_000
+    RISK_CONTROL_CODES = frozenset((-352, -412, 412, -429, 429, -509))
     FEED_API_TEMPLATE = (
         'https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space'
         '?host_mid=%s&offset=&timezone_offset=-480'
@@ -320,6 +321,21 @@ class SearchDynamicByUps(object):
         return links
 
     @classmethod
+    def is_risk_control_code(cls, code):
+        try:
+            return int(code) in cls.RISK_CONTROL_CODES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def raise_for_risk_control_code(cls, code, operation):
+        if cls.is_risk_control_code(code):
+            raise BilibiliVerificationRequired(
+                'Bilibili API rate limited during %s (code=%s)'
+                % (operation, code)
+            )
+
+    @classmethod
     def extract_feed_snapshot_from_api(cls, browser, up_id):
         try:
             browser.set_script_timeout(45)
@@ -336,6 +352,9 @@ class SearchDynamicByUps(object):
         if result.get('error'):
             raise RuntimeError('空间动态接口读取失败：%s' % result['error'])
         if result.get('code') != 0:
+            cls.raise_for_risk_control_code(
+                result.get('code'), 'space dynamic feed'
+            )
             raise RuntimeError(
                 '空间动态接口返回异常：code=%s，message=%s'
                 % (result.get('code'), result.get('message') or '未知')
@@ -494,6 +513,9 @@ class SearchDynamicByUps(object):
         base_url = 'https://space.bilibili.com/%s/dynamic' % mid
         readlist_payload = self.fetch_json(browser, self.READLIST_API % mid)
         if readlist_payload.get('code') != 0:
+            self.raise_for_risk_control_code(
+                readlist_payload.get('code'), 'readlist list'
+            )
             mylogger.warning(
                 '合集列表接口异常 %s：code=%s，继续检查空间最新文章',
                 note,
@@ -512,6 +534,9 @@ class SearchDynamicByUps(object):
                 self.select_recent_articles(space_articles, days=7)
             )
         else:
+            self.raise_for_risk_control_code(
+                space_payload.get('code'), 'space article list'
+            )
             mylogger.warning(
                 '空间最新文章接口异常 %s：code=%s', note, space_payload.get('code')
             )
@@ -522,6 +547,9 @@ class SearchDynamicByUps(object):
                 continue
             payload = self.fetch_json(browser, self.ARTICLE_LIST_API % readlist_id)
             if payload.get('code') != 0:
+                self.raise_for_risk_control_code(
+                    payload.get('code'), 'readlist article list'
+                )
                 mylogger.warning(
                     '合集文章列表异常 %s/%s：code=%s',
                     note,

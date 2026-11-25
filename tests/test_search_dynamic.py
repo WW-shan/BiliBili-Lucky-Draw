@@ -167,6 +167,26 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             'https://www.bilibili.com/read/cv40384168',
         ])
 
+    def test_readlist_api_rate_limit_is_raised_for_global_cooldown(self):
+        scanner = SearchDynamicByUps.__new__(SearchDynamicByUps)
+        scanner.count = 0
+        scanner.search_note = ''
+        scanner.draw_dynamic_dao = Mock()
+        scanner.fetch_json = Mock(return_value={'code': -352, 'message': '-352'})
+        scanner.dynLinks_to_db = Mock()
+
+        with self.assertRaises(BilibiliVerificationRequired):
+            scanner.search_readlist_source(
+                Mock(), SearchDynamicByUps.SOURCE_SPECS['J君名'], 'J君名'
+            )
+
+    def test_space_feed_api_rate_limit_is_raised_for_global_cooldown(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {'code': -352, 'message': '-352'}
+
+        with self.assertRaises(BilibiliVerificationRequired):
+            SearchDynamicByUps.extract_feed_snapshot_from_api(browser, '100680137')
+
     def test_space_feed_scans_all_recent_detail_articles_not_only_latest(self):
         now = datetime.now()
         browser = Mock()

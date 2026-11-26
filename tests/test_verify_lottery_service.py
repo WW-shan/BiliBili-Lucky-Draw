@@ -81,6 +81,27 @@ class VerifyLotteryServiceTests(unittest.TestCase):
             service.bro, 'https://www.bilibili.com/opus/new'
         )
 
+    def test_semantic_failures_use_extended_retry_window(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/semantic', 'status': '0'}
+        ]
+        service.scan_cache_dao.query.return_value = {
+            'status': '3', 'last_error': 'missing_action',
+        }
+        service.scan_cache_dao.has_recent_failure.return_value = False
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': False, 'retryable': False, 'reason': 'not_lottery',
+        }
+
+        service.verify_pending(limit=1)
+
+        service.scan_cache_dao.has_recent_failure.assert_called_once_with(
+            'lottery',
+            'https://www.bilibili.com/opus/semantic',
+            VerifyLotteryService.SEMANTIC_RETRY_BACKOFF_MINUTES / 60.0,
+        )
+
     def test_candidate_verification_starts_browser_before_fetching_notice(self):
         service = self.build_service()
         service.owns_browser = True

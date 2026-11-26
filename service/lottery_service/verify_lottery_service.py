@@ -20,6 +20,11 @@ SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
 
 class VerifyLotteryService(object):
     RETRY_BACKOFF_MINUTES = 15
+    # A post that is semantically incomplete will not become executable just
+    # because it is fetched again 15 minutes later. Keep transient network
+    # failures on the short retry window, but leave semantic rows alone longer
+    # so they cannot crowd out newly discovered activities.
+    SEMANTIC_RETRY_BACKOFF_MINUTES = 120
     MIN_CURRENT_DYNAMIC_ID = 1_250_000_000_000_000_000
     # A transient timeout must not end the whole batch.  Circuit-break only
     # when the remote endpoint is visibly blocking us.
@@ -85,6 +90,16 @@ class VerifyLotteryService(object):
             LoginService(self.bro, self.chains, self.user_id).login_by_cookie()
             self.bro.get('https://www.bilibili.com/')
 
+    def _retry_backoff_minutes(self, url):
+        try:
+            row = self.scan_cache_dao.query('lottery', url) or {}
+        except Exception:
+            return self.RETRY_BACKOFF_MINUTES
+        reason = str(row.get('last_error') or '')
+        if reason in self.SEMANTIC_DEFER_REASONS:
+            return self.SEMANTIC_RETRY_BACKOFF_MINUTES
+        return self.RETRY_BACKOFF_MINUTES
+
     def verify_pending(self, limit=None):
         batch_started = time.monotonic()
         limit = max(1, int(limit or globals.verify_batch_limit))
@@ -129,8 +144,9 @@ class VerifyLotteryService(object):
             # Action failures are tombstones, not permission to re-execute.
             # Check the cache before the ready-rule shortcut; otherwise a stale
             # rule can be promoted from 0 back to 5 immediately.
+            retry_backoff_minutes = self._retry_backoff_minutes(url)
             if self.scan_cache_dao.has_recent_failure(
-                'lottery', url, self.RETRY_BACKOFF_MINUTES / 60.0,
+                'lottery', url, retry_backoff_minutes / 60.0,
             ):
                 stats['skipped_recent'] += 1
                 continue

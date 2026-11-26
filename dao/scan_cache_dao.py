@@ -35,7 +35,7 @@ class ScanCacheDao(object):
     def query(self, scan_type, scan_url):
         self.db.con.ping(reconnect=True)
         self.db.cur.execute(
-            'SELECT status, update_time, insert_time FROM %s WHERE scan_key = %%s'
+            'SELECT status, update_time, insert_time, last_error FROM %s WHERE scan_key = %%s'
             % self.table_name,
             (self.build_key(scan_type, scan_url),),
         )

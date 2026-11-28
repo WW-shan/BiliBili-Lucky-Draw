@@ -1492,6 +1492,70 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'], result)
         self.assertEqual(result['required_actions'], ['follow', 'comment', 'like'])
 
+    def test_live_comment_prompt_and_mouse_prize_is_confirmed(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '线上抽奖｜聊聊你最喜欢的坦克 12月1日开奖，'
+                'LunaFury 鼠标｜1位，每人1只'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertIn('comment', result['required_actions'])
+
+    def test_generic_gift_phrase_counts_as_prize(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '赞转评+关注 抽送 PANDAER 好礼一份'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'like', 'forward'])
+
+    def test_lucky_grand_prize_counts_as_prize(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '关注➕转发本条动态 一起参与每月一号由Up主 @戎震 为您抽出的幸运大奖！'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'forward'])
+
+    def test_pillow_product_counts_as_prize(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '抽10位幸运观众，每人送1份蓝盒子枕中枕N3。'
+                '参与方式：关注，并转发本动态'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertIn('forward', result['required_actions'])
+
+    def test_past_round_list_mention_does_not_block_current_draw(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '抽奖奖品：抱枕、T恤、雨伞和鼠标垫，抽奖方式：关注+点赞+评论，'
+                '开奖时间：12月12日，上期抽奖名单已公布。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'like'])
+
+    def test_future_result_livestream_is_not_result_notice(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '关注+评论+转发此动态，参与抽奖送Switch掌机。'
+                '本次抽奖会在全程直播，接受大家监督抽奖结果。'
+            )},
+        ]}}}}
+        result = DynamicShareBase.classify_lottery_item(item)
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'comment', 'forward'])
+
     def test_accessory_calendar_prize_is_recognized(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
             {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '评论区留下你的猜测，将随机抽5人送出「亚克力万年历」'},

@@ -708,7 +708,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # 获奖名单"); only treat it as a finished result when paired with
         # result context below.
         result_words = (
-            '抽奖结果', '开奖结果', '恭喜获奖', '获奖公告',
+            '恭喜获奖', '获奖公告',
             '已开奖', '中奖公布', '获奖名单如下', '中奖名单如下',
         )
         past_result_words = (
@@ -717,7 +717,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         report_context_words = (
             '恭喜以下', '恭喜这', '恭喜中奖', '名单如下', '结果如下',
-            '开奖结果', '中奖结果', '获奖结果',
+            '开奖结果', '抽奖结果', '中奖结果', '获奖结果',
         )
         has_prize = any(
             word in normalized for word in (
@@ -731,6 +731,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 '袖珍书', '新书', '单行本', '绘本', '丛书', '漫画书',
                 'pocket', '支架', '电源', '充电', '显示器', '屏幕', '音箱', '音响',
                 '万年历', '面霜', '乳霜', 'C霜', '个性装扮', '装扮',
+                '好礼', '大奖', '枕', '乌龙', '掌机',
             )
         ) or bool(re.search(r'(?:送|赠|揪|抽|赢取|获得)[^\n]{0,40}[\*＊xX×]\s*\d+', normalized))
         # A product name in brackets after an explicit draw/gift verb is
@@ -795,6 +796,11 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 action_scope,
             )
             or re.search(
+                r'(?:说说|回答|分享|聊聊)[^。！!？?]{0,30}(?:你|大家)'
+                r'[^。！!？?]{0,40}(?:喜欢|最|哪个|什么|看法|感受|答案)',
+                action_scope,
+            )
+            or re.search(
                 r'(?:你|大家)[^。！!？?]{1,60}[？?]',
                 action_scope,
             )
@@ -814,7 +820,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # not the status of the current draw.
         result_scope = re.sub(
             r'(?:往期|往届|历期|历届|上期|前几期|此前|之前的)'
-            r'[^。！!；;\n]{0,20}(?:已开奖|均已开奖|已抽奖|已送出|已发放|已寄出)',
+            r'[^。！!；;\n]{0,20}(?:已开奖|均已开奖|已抽奖|已送出|已发放|已寄出|已公布|名单已公布)',
             '',
             normalized,
         )

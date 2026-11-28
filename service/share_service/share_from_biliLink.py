@@ -203,9 +203,9 @@ class BiliLinkShare(object):
                     up_url = str(getattr(dyn, 'upUrl', '') or '').strip()
                     if up_id and up_id.lower() != 'none' and up_url and up_url.lower() != 'none':
                         self.follow_up_dao.saverUpdate(up_id, up_url, self.user_id)
-                    else:
+                    elif 'follow' in (getattr(dyn, 'required_actions', []) or []):
                         mylogger.warning(
-                            '参与成功但未解析到UP信息，跳过关注记录写入：%s',
+                            '关注规则已执行但未解析到UP信息，跳过关注记录写入：%s',
                             lucky_dynamic_url,
                         )
                     success_share_cnt += 1

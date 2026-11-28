@@ -17,6 +17,10 @@ class SearchDynamicRegressionTests(unittest.TestCase):
     def test_regular_draw_up_is_not_used_as_an_aggregate_source(self):
         self.assertNotIn('和微论件', SearchDynamicByUps.DYNAMIC_SOURCES)
 
+    def test_noisy_backpack_source_is_disabled(self):
+        self.assertNotIn('糯米是个背包', SearchDynamicByUps.DYNAMIC_SOURCES)
+        self.assertNotIn('糯米是个背包', SearchDynamicByUps.SOURCE_SPECS)
+
     def test_select_readlists_keeps_newest_normal_and_official_family(self):
         rows = [
             {'id': '1', 'name': '抽奖合集②', 'articles_count': 500, 'update_time': 200},
@@ -37,7 +41,7 @@ class SearchDynamicRegressionTests(unittest.TestCase):
             {'id': '11', 'name': '抽奖', 'update_time': 1},
             {'id': '12', 'name': '抽奖 旧', 'update_time': 999},
         ]
-        year_spec = SearchDynamicByUps.SOURCE_SPECS['糯米是个背包']
+        year_spec = {'mode': 'year_readlist'}
         year_rows = [
             {'id': '21', 'name': '2025', 'update_time': 999},
             {'id': '22', 'name': '2026', 'update_time': 1},
@@ -189,6 +193,24 @@ class SearchDynamicRegressionTests(unittest.TestCase):
 
         with self.assertRaises(BilibiliVerificationRequired):
             SearchDynamicByUps.extract_feed_snapshot_from_api(browser, '100680137')
+
+    def test_space_feed_html_response_is_treated_as_verification_block(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'error': "SyntaxError: Unexpected token '<', <!DOCTYPE ...",
+        }
+
+        with self.assertRaises(BilibiliVerificationRequired):
+            SearchDynamicByUps.extract_feed_snapshot_from_api(browser, '100680137')
+
+    def test_fetch_json_html_response_is_treated_as_verification_block(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'error': "SyntaxError: Unexpected token '<', <!DOCTYPE ...",
+        }
+
+        with self.assertRaises(BilibiliVerificationRequired):
+            SearchDynamicByUps.fetch_json(browser, 'https://example.test/api')
 
     def test_space_feed_scans_all_recent_detail_articles_not_only_latest(self):
         now = datetime.now()

@@ -209,10 +209,13 @@ class BiliLinkShareTests(unittest.TestCase):
         ), patch(
             'service.share_service.share_from_biliLink.get_random_comment_content',
             return_value='comment',
-        ):
+        ), patch(
+            'service.share_service.share_from_biliLink.mylogger'
+        ) as logger:
             service.do_share_by_links()
 
         service.follow_up_dao.saverUpdate.assert_not_called()
+        logger.warning.assert_not_called()
 
     def test_successful_share_records_result(self):
         service = self.build_service()

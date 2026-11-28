@@ -45,8 +45,13 @@ create table t_share_info
     share_time   datetime     null,
     share_status int          null,
     user_id      varchar(50)  null,
+    share_dynamic_id varchar(32) generated always as (
+        substring_index(substring_index(share_url, '/', -1), '?', 1)
+    ) stored,
     constraint t_share_info_pk
-        unique (id)
+        unique (id),
+    constraint t_share_info_dynamic_user_uq
+        unique (share_dynamic_id, user_id)
 )
     comment '动态转发的基本信息表';
 

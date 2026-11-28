@@ -53,7 +53,6 @@ class SearchDynamicByUps(object):
         '你的工具人老公': 'https://space.bilibili.com/100680137/dynamic',
         '_大锦鲤_': 'https://space.bilibili.com/226257459/dynamic',
         'J君名': 'https://space.bilibili.com/126038161/dynamic',
-        '糯米是个背包': 'https://space.bilibili.com/492426375/dynamic',
         '抽奖工具人转发池': 'https://space.bilibili.com/280604312/dynamic',
     }
     FORWARD_POOL_SOURCES = frozenset({'抽奖工具人转发池'})
@@ -74,11 +73,6 @@ class SearchDynamicByUps(object):
             'mid': '126038161',
             'mode': 'readlists',
             'readlist_names': ('抽奖',),
-            'article_limit': 1,
-        },
-        '糯米是个背包': {
-            'mid': '492426375',
-            'mode': 'year_readlist',
             'article_limit': 1,
         },
         '抽奖工具人转发池': {
@@ -478,6 +472,15 @@ class SearchDynamicByUps(object):
                 % (operation, code)
             )
 
+    @staticmethod
+    def is_html_response_error(message):
+        text = str(message or '').casefold()
+        return (
+            "unexpected token '<'" in text
+            or '<!doctype' in text
+            or 'not valid json' in text
+        )
+
     @classmethod
     def extract_feed_snapshot_from_api(cls, browser, up_id):
         try:
@@ -493,7 +496,12 @@ class SearchDynamicByUps(object):
         if result.get('timeout'):
             raise TimeoutException('空间动态接口读取超时')
         if result.get('error'):
-            raise RuntimeError('空间动态接口读取失败：%s' % result['error'])
+            message = str(result['error'])
+            if cls.is_html_response_error(message):
+                raise BilibiliVerificationRequired(
+                    '空间动态接口返回HTML风控页'
+                )
+            raise RuntimeError('空间动态接口读取失败：%s' % message)
         if result.get('code') != 0:
             cls.raise_for_risk_control_code(
                 result.get('code'), 'space dynamic feed'
@@ -516,7 +524,12 @@ class SearchDynamicByUps(object):
         if result.get('timeout'):
             raise TimeoutException('B站接口读取超时')
         if result.get('error'):
-            raise RuntimeError('B站接口读取失败：%s' % result['error'])
+            message = str(result['error'])
+            if cls.is_html_response_error(message):
+                raise BilibiliVerificationRequired(
+                    'B站接口返回HTML风控页'
+                )
+            raise RuntimeError('B站接口读取失败：%s' % message)
         return result
 
     @staticmethod

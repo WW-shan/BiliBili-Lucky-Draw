@@ -209,6 +209,10 @@ class ShareOneDynamicTests(unittest.TestCase):
         ), patch.object(share, 'is_expired_dynamic', return_value=False), patch.object(
             share, 'ensure_publish_cookie'
         ), patch.object(
+            share,
+            'verify_official_participation',
+            return_value={'completed': True, 'expired': False, 'message': ''},
+        ), patch.object(
             share, 'verify_official_lottery', return_value=(False, 'missing_action')
         ) as verify_official, patch(
             'service.share_service.share_one_dynamic.random_sleep'
@@ -324,9 +328,13 @@ class ShareOneDynamicTests(unittest.TestCase):
         ), patch.object(share, 'is_expired_dynamic', return_value=False), patch.object(
             share, 'verify_official_lottery', return_value=(True, '')
         ), patch.object(
+            share,
+            'verify_official_participation',
+            return_value={'completed': True, 'expired': False, 'message': ''},
+        ), patch.object(
             share, 'ensure_publish_cookie'
         ) as ensure_publish_cookie, patch.object(
-            share, 'click_follow_all'
+            share, 'click_follow_author'
         ) as click_follow, patch.object(
             share, 'click_like'
         ) as click_like, patch.object(
@@ -343,7 +351,8 @@ class ShareOneDynamicTests(unittest.TestCase):
             'service.share_service.share_one_dynamic.random_sleep'
         ):
             share.share_one(
-                browser, chains, 'https://www.bilibili.com/opus/123', 'share', 'comment'
+                browser, chains, 'https://www.bilibili.com/opus/123', 'share', 'comment',
+                required_actions=['follow', 'like', 'reserve', 'comment', 'forward'],
             )
 
         ensure_publish_cookie.assert_called_once_with(browser)
@@ -477,7 +486,7 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(result['confirmed'], result)
         self.assertEqual(result['required_actions'], ['follow', 'forward'])
 
-    def test_official_draw_with_explicit_opus_rules_does_not_need_notice_api(self):
+    def test_official_draw_with_explicit_opus_rules_uses_notice_metadata(self):
         item = {'modules': {'module_dynamic': {
             'desc': None,
             'major': {
@@ -491,15 +500,29 @@ class ShareOneDynamicTests(unittest.TestCase):
         share = DynamicShareBase()
         share._fetch_dynamic_detail_item = Mock(return_value=item)
         browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'message': '',
+            'lottery_id': '430459',
+            'lottery_time': 2099999999,
+            'status': 0,
+            'followed': False,
+            'reposted': False,
+            'participated': False,
+            'need_post': 1,
+            'lottery_feed_limit': 1,
+            'first_prize_cmt': '2W现金',
+        }
 
         result = share.fetch_official_lottery_notice(
             browser, 'https://www.bilibili.com/opus/1272729050457047049', retries=1
         )
 
         self.assertTrue(result['confirmed'], result)
-        self.assertEqual(result['source'], 'plain_text')
+        self.assertEqual(result['source'], 'official+text')
+        self.assertEqual(result['lottery_id'], '430459')
         self.assertEqual(result['lottery_rule']['required_actions'], ['follow', 'forward'])
-        browser.execute_async_script.assert_not_called()
+        browser.execute_async_script.assert_called_once()
 
     def test_opus_detail_modules_list_is_normalized_with_text(self):
         item = {
@@ -887,6 +910,20 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertFalse(result['confirmed'])
         self.assertEqual(result['reason'], 'missing_action')
 
+    def test_incomplete_giveaway_still_exposes_explicit_actions(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注转发评论即可参加。本次抽奖由舰长支持。'},
+        ]}}}}
+
+        result = DynamicShareBase.classify_lottery_item(item)
+
+        self.assertFalse(result['confirmed'])
+        self.assertEqual(result['reason'], 'missing_prize')
+        self.assertEqual(
+            result['required_actions'],
+            ['follow', 'comment', 'forward'],
+        )
+
     def test_negative_giveaway_examples_are_rejected(self):
         samples = (
             '抽奖结果公布，恭喜以下3位中奖粉丝，开奖时间11月20日。',
@@ -1095,6 +1132,29 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertTrue(
             {'follow', 'comment', 'like', 'forward'}.issubset(result['required_actions'])
         )
+
+    def test_conditional_prize_return_clause_does_not_make_live_giveaway_a_result(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': (
+                '本期好礼：记忆绵腰靠*10。参与方式：关注并评论。'
+                '如奖项已发放，请退回相应奖品。'
+            )},
+        ]}}}}
+
+        result = DynamicShareBase.classify_lottery_item(item)
+
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['follow', 'comment'])
+
+    def test_homophone_forward_comment_shorthand_is_recognized(self):
+        item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
+            {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '【卷+瓶】揪2位爱犬人士各送实体书*1'},
+        ]}}}}
+
+        result = DynamicShareBase.classify_lottery_item(item)
+
+        self.assertTrue(result['confirmed'], result)
+        self.assertEqual(result['required_actions'], ['comment', 'forward'])
 
     def test_five_lian_emoji_is_parsed_as_like_comment_forward(self):
         item = {'modules': {'module_dynamic': {'desc': {'rich_text_nodes': [
@@ -1340,8 +1400,14 @@ class ShareOneDynamicTests(unittest.TestCase):
         self.assertFalse(result['confirmed'])
         self.assertEqual(result['kind'], 'result_or_notice')
 
-    def test_incomplete_text_giveaway_is_reviewed_not_auto_executed(self):
+    def test_incomplete_text_giveaway_checks_official_notice_before_review(self):
         browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': -9999,
+            'message': '服务系统错误',
+            'lottery_id': '',
+            'status': None,
+        }
         share = DynamicShareBase()
         share._fetch_dynamic_detail_item = Mock(return_value={
             'modules': {'module_dynamic': {
@@ -1358,8 +1424,8 @@ class ShareOneDynamicTests(unittest.TestCase):
 
         self.assertFalse(result['confirmed'])
         self.assertTrue(result['retryable'])
-        self.assertEqual(result['reason'], 'missing_prize')
-        browser.execute_async_script.assert_not_called()
+        self.assertEqual(result['reason'], 'api_code:-9999')
+        browser.execute_async_script.assert_called_once()
 
     def test_deadline_is_parsed_from_numbered_chinese_giveaway_time(self):
         self.assertEqual(
@@ -1816,6 +1882,263 @@ class ShareOneDynamicTests(unittest.TestCase):
         }}}
         self.assertFalse(DynamicShareBase._has_official_lottery_component(item))
 
+    def test_suspected_giveaway_queries_hidden_official_lottery(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'message': '',
+            'lottery_id': '433288',
+            'lottery_time': 1795882440,
+            'status': 0,
+            'followed': True,
+            'reposted': True,
+            'participated': False,
+            'need_post': 0,
+            'lottery_feed_limit': 1,
+            'first_prize_cmt': '52R',
+            'second_prize_cmt': None,
+            'third_prize_cmt': '',
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '给大家抽个52元红包。'},
+            ]},
+            'additional': None,
+        }}})
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1275423966303879172', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['source'], 'official_notice')
+        self.assertEqual(result['lottery_id'], '433288')
+        browser.execute_async_script.assert_called_once()
+
+    def test_official_notice_derives_actions_from_account_state(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'message': '',
+            'lottery_id': '433144',
+            'lottery_time': 1798286400,
+            'status': 0,
+            'followed': False,
+            'reposted': False,
+            'participated': False,
+            'need_post': 1,
+            'lottery_feed_limit': 1,
+            'first_prize_cmt': '联想灵迅自带线100W移动电源',
+            'second_prize_cmt': None,
+            'third_prize_cmt': '',
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '本月官方平台抽奖，送移动电源。'},
+            ]},
+            'additional': None,
+        }}})
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1274983830969647105', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(
+            result['lottery_rule']['required_actions'],
+            ['follow', 'forward'],
+        )
+        self.assertEqual(result['lottery_rule']['official_business_type'], 1)
+        self.assertEqual(
+            result['lottery_rule']['official_business_id'],
+            '1274983830969647105',
+        )
+
+    def test_official_notice_merges_explicit_comment_with_account_state(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': 0,
+            'message': '',
+            'lottery_id': '432970',
+            'lottery_time': 2099999999,
+            'status': 0,
+            'followed': True,
+            'reposted': False,
+            'participated': False,
+            'need_post': 0,
+            'lottery_feed_limit': 1,
+            'first_prize_cmt': '狐狸套',
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注转发评论即可参加。本次抽奖由舰长支持。'},
+            ]},
+            'additional': None,
+        }}})
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1274388668724805640', retries=1
+        )
+
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(
+            result['lottery_rule']['required_actions'],
+            ['comment', 'forward'],
+        )
+
+    def test_official_participation_accepts_h5_success_state(self):
+        browser = Mock()
+        browser.find_element.return_value = Mock(
+            text='开奖倒计时 1 天\n已成功参与\n该抽奖已自动过滤异常行为'
+        )
+        browser.find_elements.return_value = []
+        share = DynamicShareBase()
+        share.wait_css = Mock(return_value=Mock())
+
+        result = share.verify_official_participation(
+            browser, business_type=1, business_id='1275423966303879172'
+        )
+
+        self.assertTrue(result['completed'])
+        self.assertFalse(result['expired'])
+
+    def test_official_participation_reports_incomplete_h5_conditions(self):
+        browser = Mock()
+        browser.find_element.return_value = Mock(
+            text='互动条件：关注我、转发本动态\n关注UP主并转发抽奖动态'
+        )
+        join_button = Mock()
+        join_button.text = '关注UP主并转发抽奖动态'
+        join_button.get_attribute.return_value = 'join-button'
+        browser.find_elements.return_value = [join_button]
+        share = DynamicShareBase()
+        share.wait_css = Mock(return_value=Mock())
+
+        result = share.verify_official_participation(
+            browser, business_type=1, business_id='1274983830969647105'
+        )
+
+        self.assertFalse(result['completed'])
+        self.assertFalse(result['expired'])
+        self.assertIn('关注UP主并转发抽奖动态', result['message'])
+
+    def test_official_share_flow_does_not_succeed_when_h5_is_incomplete(self):
+        share = DynamicShareBase()
+        share.wait_page_ready = Mock()
+        share.get_dynamic_text = Mock(return_value='官方平台抽奖')
+        share.is_expired_dynamic = Mock(return_value=False)
+        share.ensure_publish_cookie = Mock()
+        share.verify_official_participation = Mock(return_value={
+            'completed': False,
+            'expired': False,
+            'message': '关注UP主并转发抽奖动态',
+        })
+
+        share.share_one(
+            Mock(),
+            Mock(),
+            'https://www.bilibili.com/opus/1274983830969647105',
+            'share',
+            'comment',
+            lottery_end_time='2099-12-31 00:00:00',
+            lottery_kind='official',
+            lottery_rule=(
+                "{'text': '官方平台抽奖', 'required_actions': [], "
+                "'official_business_type': 1, "
+                "'official_business_id': '1274983830969647105'}"
+            ),
+            required_actions='[]',
+        )
+
+        self.assertEqual(share.share_status, 3)
+        self.assertIn('官方抽奖', share.last_error)
+
+    def test_official_share_flow_follows_author_and_confirms_h5(self):
+        share = DynamicShareBase()
+        share.wait_page_ready = Mock()
+        share.get_dynamic_text = Mock(return_value='关注并转发官方抽奖')
+        share.is_expired_dynamic = Mock(return_value=False)
+        share.ensure_publish_cookie = Mock()
+        share.verify_official_participation = Mock(return_value={
+            'completed': True,
+            'expired': False,
+            'message': '',
+        })
+
+        with patch.object(share, 'click_follow_author') as click_follow, patch.object(
+            share, 'is_already_forwarded', side_effect=[False, True]
+        ), patch.object(share, 'click_share') as click_share, patch(
+            'service.share_service.share_one_dynamic.random_sleep'
+        ):
+            share.share_one(
+                Mock(),
+                Mock(),
+                'https://www.bilibili.com/opus/1274983830969647105',
+                'share',
+                'comment',
+                lottery_end_time='2099-12-31 00:00:00',
+                lottery_kind='official',
+                lottery_rule=(
+                    "{'text': '关注并转发官方抽奖', "
+                    "'required_actions': ['follow', 'forward'], "
+                    "'official_business_type': 1, "
+                    "'official_business_id': '1274983830969647105'}"
+                ),
+                required_actions="['follow', 'forward']",
+            )
+
+        click_follow.assert_called_once()
+        click_share.assert_called_once()
+        self.assertEqual(share.share_status, 0)
+        self.assertIsNone(share.last_error)
+
+    def test_missing_required_actions_do_not_default_to_all_social_actions(self):
+        share = DynamicShareBase()
+        share.wait_page_ready = Mock()
+        share.get_dynamic_text = Mock(return_value='官方平台抽奖')
+        share.is_expired_dynamic = Mock(return_value=False)
+        share.ensure_publish_cookie = Mock()
+        share.verify_official_participation = Mock(return_value={
+            'completed': True,
+            'expired': False,
+            'message': '',
+        })
+
+        with patch.object(share, 'click_follow_author') as click_follow, patch.object(
+            share, 'click_like'
+        ) as click_like, patch.object(
+            share, 'click_reserve'
+        ) as click_reserve, patch.object(
+            share, 'commit_comment'
+        ) as commit_comment, patch.object(
+            share, 'click_share'
+        ) as click_share:
+            share.share_one(
+                Mock(),
+                Mock(),
+                'https://www.bilibili.com/opus/1274983830969647105',
+                'share',
+                'comment',
+                lottery_end_time='2099-12-31 00:00:00',
+                lottery_kind='official',
+                lottery_rule=(
+                    "{'text': '官方平台抽奖', "
+                    "'official_business_type': 1, "
+                    "'official_business_id': '1274983830969647105'}"
+                ),
+                required_actions=None,
+            )
+
+        click_follow.assert_not_called()
+        click_like.assert_not_called()
+        click_reserve.assert_not_called()
+        commit_comment.assert_not_called()
+        click_share.assert_not_called()
+        self.assertEqual(share.share_status, 0)
+
     def test_confirmed_text_giveaway_does_not_require_notice_when_component_is_only_hint(self):
         browser = Mock()
         browser.execute_async_script.return_value = {
@@ -1861,6 +2184,31 @@ class ShareOneDynamicTests(unittest.TestCase):
             result['lottery_rule']['required_actions'],
             ['follow', 'forward'],
         )
+
+    def test_confirmed_text_with_official_hint_checks_notice_then_falls_back(self):
+        browser = Mock()
+        browser.execute_async_script.return_value = {
+            'code': -9999,
+            'message': '服务系统错误',
+            'lottery_id': '',
+            'status': None,
+        }
+        share = DynamicShareBase()
+        share._fetch_dynamic_detail_item = Mock(return_value={'modules': {'module_dynamic': {
+            'desc': {'rich_text_nodes': [
+                {'type': 'RICH_TEXT_NODE_TYPE_TEXT', 'text': '关注并转发，参与互动抽奖，11月30日送耳机。'},
+            ]},
+            'additional': None,
+        }}})
+
+        result = share.fetch_official_lottery_notice(
+            browser, 'https://www.bilibili.com/opus/1274109860959485957', retries=1
+        )
+
+        browser.execute_async_script.assert_called_once()
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['source'], 'plain_text')
+        self.assertEqual(result['lottery_rule']['required_actions'], ['follow', 'forward'])
 
     def test_zero_without_lottery_id_is_unknown_not_explicit_non_lottery(self):
         browser = Mock()
@@ -1981,7 +2329,8 @@ class ShareOneDynamicTests(unittest.TestCase):
         ):
             share.commit_comment = Mock(side_effect=TimeoutException('comment editor missing'))
             share.share_one(
-                browser, chains, 'https://www.bilibili.com/opus/123', 'share', 'comment'
+                browser, chains, 'https://www.bilibili.com/opus/123', 'share', 'comment',
+                required_actions=['follow', 'comment', 'forward'],
             )
 
         click_share.assert_not_called()
@@ -2017,6 +2366,7 @@ class ShareOneDynamicTests(unittest.TestCase):
                 browser, chains, 'https://www.bilibili.com/opus/123',
                 'share', 'comment', lottery_kind='plain_text',
                 lottery_end_time='2099-12-31 00:00:00',
+                required_actions=['forward'],
             )
 
         share.verify_official_lottery.assert_not_called()

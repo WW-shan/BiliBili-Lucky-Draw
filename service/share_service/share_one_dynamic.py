@@ -76,6 +76,14 @@ class DynamicShareBase(object):
               lottery_id: data.lottery_id || '',
               lottery_time: data.lottery_time || null,
               status: data.status,
+              followed: data.followed,
+              reposted: data.reposted,
+              participated: data.participated,
+              need_post: data.need_post,
+              lottery_feed_limit: data.lottery_feed_limit,
+              first_prize_cmt: data.first_prize_cmt || '',
+              second_prize_cmt: data.second_prize_cmt || '',
+              third_prize_cmt: data.third_prize_cmt || '',
             });
           })
           .catch(error => {
@@ -195,7 +203,10 @@ class DynamicShareBase(object):
         """
         self.notice_lottery_time = None
         self.lottery_time = self._coerce_datetime(lottery_end_time)
-        default_actions = ['follow', 'like', 'reserve', 'comment', 'forward']
+        # A verified rule must state the actions it needs. Defaulting to all
+        # social actions caused unrelated follows/likes/comments on legacy or
+        # incomplete rows, so missing actions now fail closed.
+        default_actions = []
         required_actions_error = None
         if required_actions is None:
             required_actions = default_actions
@@ -245,6 +256,15 @@ class DynamicShareBase(object):
                 self.original_dynamic_text = ''
             saved_rule_text = str(lottery_rule or '').strip()
             has_saved_rule = saved_rule_text not in ('', '{}', 'None', 'null')
+            saved_rule = self._coerce_rule_payload(lottery_rule)
+            dynamic_match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
+            official_business_type = int(
+                saved_rule.get('official_business_type') or 1
+            )
+            official_business_id = str(
+                saved_rule.get('official_business_id')
+                or (dynamic_match.group(1) if dynamic_match else '')
+            )
             if lottery_kind == 'plain_text' or has_saved_rule:
                 # The verification stage already established the executable
                 # rule. Re-querying here can transiently return missing_action
@@ -284,7 +304,10 @@ class DynamicShareBase(object):
                 return
             self.ensure_publish_cookie(bro)
             if 'follow' in self.required_actions:
-                self.click_follow_all(bro, chains)
+                if lottery_kind == 'official':
+                    self.click_follow_author(bro, chains)
+                else:
+                    self.click_follow_all(bro, chains)
                 random_sleep()
             if 'like' in self.required_actions:
                 self.click_like(bro, chains)
@@ -324,6 +347,24 @@ class DynamicShareBase(object):
                     if confirmed is None:
                         raise Exception("转发提交后状态未能确认，稍后重试")
                 random_sleep()
+            if lottery_kind == 'official':
+                participation = self.verify_official_participation(
+                    bro,
+                    business_type=official_business_type,
+                    business_id=official_business_id,
+                )
+                if participation.get('expired'):
+                    self.status = 2
+                    self.share_status = 2
+                    mylogger.info(
+                        '官方抽奖已结束，跳过url：%s', lucky_dynamic_url
+                    )
+                    return
+                if not participation.get('completed'):
+                    raise Exception(
+                        '官方抽奖未确认参与：%s'
+                        % (participation.get('message') or 'H5状态未完成')
+                    )
             # 回填状态
             self.share_status = 0
             self.status = 0
@@ -368,6 +409,108 @@ class DynamicShareBase(object):
             return datetime.fromtimestamp(timestamp, SHANGHAI_TZ).replace(tzinfo=None)
         except (OSError, OverflowError, ValueError):
             return None
+
+    @staticmethod
+    def _coerce_rule_payload(value):
+        if isinstance(value, dict):
+            return dict(value)
+        if not value:
+            return {}
+        text = str(value).strip()
+        if text in ('', '{}', 'None', 'null'):
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _official_lottery_url(business_type=1, business_id=''):
+        return (
+            'https://www.bilibili.com/h5/lottery/result'
+            '?business_type=%s&business_id=%s&isWeb=1'
+            % (quote(str(business_type), safe=''), quote(str(business_id), safe=''))
+        )
+
+    def verify_official_participation(self, bro, business_type=1, business_id=''):
+        """Verify the official H5 participation state after social actions."""
+        if not str(business_id or '').strip():
+            return {
+                'completed': False,
+                'expired': False,
+                'message': '缺少官方抽奖业务ID',
+            }
+        url = self._official_lottery_url(business_type, business_id)
+        bro.get(url)
+        try:
+            self.wait_css(bro, '.lottery-result, .join-button', timeout=15)
+        except TimeoutException:
+            return {
+                'completed': False,
+                'expired': False,
+                'message': '官方抽奖页面未加载完成',
+            }
+
+        def read_state():
+            body = ''
+            try:
+                body = str(bro.find_element(By.TAG_NAME, 'body').text or '')
+            except Exception:
+                pass
+            join_buttons = []
+            try:
+                join_buttons = bro.find_elements(By.CSS_SELECTOR, '.join-button') or []
+            except Exception:
+                pass
+            if not isinstance(join_buttons, (list, tuple)):
+                join_buttons = []
+            button_text = ''
+            button_class = ''
+            for button in join_buttons:
+                text = str(getattr(button, 'text', '') or '').strip()
+                if not text:
+                    try:
+                        text = str(button.get_attribute('innerText') or '').strip()
+                    except Exception:
+                        text = ''
+                if text and not button_text:
+                    button_text = text
+                try:
+                    button_class = str(button.get_attribute('class') or '')
+                except Exception:
+                    button_class = ''
+            return body, button_text, button_class
+
+        body, button_text, button_class = read_state()
+        if '已成功参与' in body or '参与成功' in body or '已参与抽奖' in body:
+            return {'completed': True, 'expired': False, 'message': ''}
+        if any(word in body for word in ('活动已结束', '抽奖已结束', '已开奖', '已结束')):
+            return {'completed': False, 'expired': True, 'message': '官方抽奖已结束'}
+        if 'join-button--disable' in button_class and button_text:
+            return {'completed': True, 'expired': False, 'message': ''}
+        if button_text and any(
+            word in button_text for word in ('参与抽奖', '立即参与', '确认参与', '参与活动')
+        ):
+            buttons = bro.find_elements(By.CSS_SELECTOR, '.join-button')
+            if buttons:
+                self.click_by_js(bro, buttons[0])
+                time.sleep(2)
+                body, button_text, button_class = read_state()
+                if '已成功参与' in body or '参与成功' in body or '已参与抽奖' in body:
+                    return {'completed': True, 'expired': False, 'message': ''}
+                if 'join-button--disable' in button_class:
+                    return {'completed': True, 'expired': False, 'message': ''}
+                if any(word in body for word in ('活动已结束', '抽奖已结束', '已开奖', '已结束')):
+                    return {'completed': False, 'expired': True, 'message': '官方抽奖已结束'}
+        return {
+            'completed': False,
+            'expired': False,
+            'message': button_text or '官方抽奖条件未完成',
+        }
 
     @staticmethod
     def _notice_datetime(value):
@@ -684,6 +827,153 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             modules['module_dynamic'] = module_dynamic
         return True
 
+    @staticmethod
+    def _derive_required_actions(
+        action_scope,
+        favorite_scope,
+        follower_requirement=False,
+        direct_comment_prompt=False,
+    ):
+        """Return explicit engagement actions even for an incomplete rule."""
+        action_text = action_scope.replace('&', '').replace('＋', '').replace('+', '')
+        four_lian = any(
+            phrase in action_scope for phrase in (
+                '4连', '四连', '卷管赞平4连', '转关赞评',
+                '关转赞评', '转赞评',
+            )
+        )
+        compact_actions = (
+            four_lian
+            or '关转赞评' in action_scope
+            or '转赞评' in action_scope
+            or '关转评' in action_scope
+            or '转关评' in action_scope
+            or '关&转&赞&评' in action_scope
+            or '关+赞+转+评' in action_scope.replace('＋', '+')
+            or '关+赞' in action_scope.replace('＋', '+')
+            or '转+评' in action_scope.replace('＋', '+')
+        )
+        has_forward = (
+            compact_actions
+            or '转发' in action_scope
+            or '转' in action_text
+            or '转赞评' in action_text
+            or '转评' in action_text
+            or '关转评' in action_text
+            or '关转评' in action_scope
+            or '关+转' in action_scope
+            or '关+转' in action_text
+            or '关+赞' in action_text
+            or '转+评' in action_text
+            or '关+赞+转+评' in action_scope.replace('＋', '+')
+            or '关+赞' in action_scope.replace('＋', '+')
+            or '转+评' in action_scope.replace('＋', '+')
+            or '5️⃣连' in action_scope
+            or '五连' in action_scope
+        )
+        has_comment = direct_comment_prompt or compact_actions or any(
+            word in action_scope for word in (
+                '评论', '留言', 'plq', '评论区留', '评论区抽', '评论抽',
+                '关转评', '转+评', '转评',
+            )
+        )
+        if not has_comment and '评论区' in action_scope:
+            has_comment = any(
+                word in action_scope for word in ('聊聊', '说说', '分享', '祝福')
+            )
+        has_follow = (
+            four_lian
+            or follower_requirement
+            or '关注' in action_scope
+            or '关' in action_text
+            or '关转评' in action_scope
+            or '关+转' in action_scope
+        )
+        has_like = (
+            four_lian
+            or '点赞' in action_scope
+            or '赞' in action_text
+            or '5️⃣连' in action_scope
+            or '五连' in action_scope
+        )
+        if (
+            ('点赞' in action_scope or '赞' in action_text)
+            and ('评论' in action_scope or '留言' in action_scope)
+            and ('转发' in action_scope or '转' in action_text)
+        ):
+            has_three_lian = True
+        else:
+            has_three_lian = '三连' in action_scope or '3️⃣连' in action_scope
+        has_five_lian = '五连' in action_scope or '5️⃣连' in action_scope
+        star_in_action_context = bool(re.search(
+            r'(?:参与方式|参与条件|参与步骤)[^\n]{0,60}[⭐️⭐]',
+            favorite_scope,
+        ))
+        has_favorite = (
+            has_five_lian
+            or star_in_action_context
+            or bool(re.search(
+                r'(?:点赞[、,+＆&和与及]*)?收藏[、,+＆&和与及]*(?:转发|评论|点赞|转|评)',
+                favorite_scope,
+            ))
+            or bool(re.search(
+                r'收藏[^\n]{0,12}(?:本条|本动态|此动态|动态|参与)',
+                favorite_scope,
+            ))
+            or bool(re.search(
+                r'(?:怎么报名|报名方式|参与方式|参与条件|参与步骤)[^\n]{0,80}收藏',
+                favorite_scope,
+            ))
+        )
+        if has_three_lian:
+            has_like = True
+            has_comment = True
+            has_forward = True
+        if has_five_lian:
+            has_follow = True
+            has_like = True
+            has_comment = True
+            has_favorite = True
+            has_forward = True
+        has_reserve = '预约' in action_scope
+        has_coin = '投币' in action_scope
+        if has_reserve:
+            action = 'reserve'
+        elif has_forward:
+            action = 'forward'
+        elif has_comment:
+            action = 'comment'
+        elif has_follow:
+            action = 'follow'
+        else:
+            action = 'forward'
+        required_actions = []
+        if has_follow:
+            required_actions.append('follow')
+        if has_comment:
+            required_actions.append('comment')
+        if has_like:
+            required_actions.append('like')
+        if has_favorite:
+            required_actions.append('favorite')
+        if has_forward:
+            required_actions.append('forward')
+        if has_reserve:
+            required_actions.append('reserve')
+        if has_coin:
+            required_actions.append('coin')
+        return {
+            'action': action,
+            'required_actions': required_actions,
+            'has_follow': has_follow,
+            'has_comment': has_comment,
+            'has_like': has_like,
+            'has_favorite': has_favorite,
+            'has_forward': has_forward,
+            'has_reserve': has_reserve,
+            'has_coin': has_coin,
+        }
+
     @classmethod
     def classify_lottery_item(cls, item):
         """Classify an item by explicit giveaway evidence, not keywords alone."""
@@ -763,6 +1053,11 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         # perform an action. Remove complete hashtag tokens before deriving
         # any of the engagement flags.
         action_scope = re.sub(r'#[^#\n]{1,40}#', '', action_scope)
+        # Homophone shorthand used to avoid engagement-word filtering:
+        # 卷+瓶 (juǎn+píng) means 转+评 (forward+comment).
+        action_scope = re.sub(
+            r'卷\s*[+＋]\s*[瓶评]', '转+评', action_scope
+        )
         # Some official draws require only that the entrant is already a
         # follower ("只要是我的粉丝都可以参与"). That is an explicit follow
         # requirement even when the post never says the verb "关注".
@@ -815,6 +1110,13 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         )
         result['has_prize'] = bool(has_prize)
         result['has_action'] = bool(has_action)
+        action_details = cls._derive_required_actions(
+            action_scope,
+            favorite_scope,
+            follower_requirement=follower_requirement,
+            direct_comment_prompt=direct_comment_prompt,
+        )
+        result.update(action_details)
         # Creators often mention completed earlier rounds in the same post as
         # a live giveaway ("往期皆已开奖"). Those clauses describe history,
         # not the status of the current draw.
@@ -823,6 +1125,14 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             r'[^。！!；;\n]{0,20}(?:已开奖|均已开奖|已抽奖|已送出|已发放|已寄出|已公布|名单已公布)',
             '',
             normalized,
+        )
+        # Conditional return/forfeit clauses describe a future edge case, not
+        # a completed result for the current giveaway.
+        result_scope = re.sub(
+            r'(?:如|若|如果|一旦)[^。！!；;\n]{0,40}'
+            r'(?:已开奖|已抽奖|已送出|已发放|已寄出|已公布|名单已公布)',
+            '',
+            result_scope,
         )
         is_result_notice = (
             any(word in result_scope for word in result_words + past_result_words)
@@ -903,156 +1213,14 @@ fetch(target, {credentials: 'include', signal: controller.signal})
             result.update(kind='suspected_giveaway', reason='missing_prize')
             return result
 
-        action_text = action_scope.replace('&', '').replace('＋', '').replace('+', '')
-        action_words = ('关注', '转发', '评论', '留言', '点赞', '预约', '参与', '@', '关+', '关转', '转')
-        action_aliases = (
-            '转赞评', '关转赞评', '关转评', '转评', '评论抽',
-            '评论区抽', '关注转发评论', '关转评', '五连', '5️⃣连', 'plq',
-        )
-
-        four_lian = any(
-            phrase in action_scope for phrase in (
-                '4连', '四连', '卷管赞平4连', '转关赞评',
-                '关转赞评', '转赞评',
-            )
-        )
-        compact_actions = (
-            four_lian
-            or '关转赞评' in action_scope
-            or '转赞评' in action_scope
-            or '关转评' in action_scope
-            or '转关评' in action_scope
-            or '关&转&赞&评' in action_scope
-            or '关+赞+转+评' in action_scope.replace('＋', '+')
-            or '关+赞' in action_scope.replace('＋', '+')
-            or '转+评' in action_scope.replace('＋', '+')
-        )
-        has_forward = (
-            compact_actions
-            or '转发' in action_scope
-            or '转' in action_text
-            or '转赞评' in action_text
-            or '转评' in action_text
-            or '关转评' in action_text
-            or '关转评' in action_scope
-            or '关+转' in action_scope
-            or '关+转' in action_text
-            or '关+赞' in action_text
-            or '转+评' in action_text
-            or '关+赞+转+评' in action_scope.replace('＋', '+')
-            or '关+赞' in action_scope.replace('＋', '+')
-            or '转+评' in action_scope.replace('＋', '+')
-            or '5️⃣连' in action_scope
-            or '五连' in action_scope
-        )
-        # "评论区" is discussion context, not an action by itself. Require an
-        # explicit comment verb; "plq" is the common Bilibili abbreviation.
-        has_comment = direct_comment_prompt or compact_actions or any(
-            word in action_scope for word in (
-                '评论', '留言', 'plq', '评论区留', '评论区抽', '评论抽',
-                '关转评', '转+评', '转评',
-            )
-        )
-        # Conversational words only imply a comment action when the post
-        # explicitly places them in the comment area. They often occur in
-        # unrelated podcast/product copy and must not create a comment.
-        if not has_comment and '评论区' in action_scope:
-            has_comment = any(
-                word in action_scope for word in ('聊聊', '说说', '分享', '祝福')
-            )
-        has_follow = (
-            four_lian
-            or follower_requirement
-            or '关注' in action_scope
-            or '关' in action_text
-            or '关转评' in action_scope
-            or '关+转' in action_scope
-        )
-        # A bare "赞" in unrelated product copy must not count as engagement.
-        has_like = (
-            four_lian
-            or '点赞' in action_scope
-            or '赞' in action_text
-            or '5️⃣连' in action_scope
-            or '五连' in action_scope
-        )
-        # Bilibili shorthand uses "三连" for like+comment+forward. When the
-        # post spells out a three-action set (点赞/评论/转发), treat it the
-        # same way instead of silently omitting the favorite-style component.
-        if (
-            ('点赞' in action_scope or '赞' in action_text)
-            and ('评论' in action_scope or '留言' in action_scope)
-            and ('转发' in action_scope or '转' in action_text)
-        ):
-            has_three_lian = True
-        else:
-            has_three_lian = '三连' in action_scope or '3️⃣连' in action_scope
-        has_five_lian = '五连' in action_scope or '5️⃣连' in action_scope
-        star_in_action_context = bool(re.search(
-            r'(?:参与方式|参与条件|参与步骤)[^\n]{0,60}[⭐️⭐]',
-            favorite_scope,
-        ))
-        has_favorite = (
-            has_five_lian
-            or star_in_action_context
-            or bool(re.search(
-                r'(?:点赞[、,+＆&和与及]*)?收藏[、,+＆&和与及]*(?:转发|评论|点赞|转|评)',
-                favorite_scope,
-            ))
-            or bool(re.search(
-                r'收藏[^\n]{0,12}(?:本条|本动态|此动态|动态|参与)',
-                favorite_scope,
-            ))
-            or bool(re.search(
-                r'(?:怎么报名|报名方式|参与方式|参与条件|参与步骤)[^\n]{0,80}收藏',
-                favorite_scope,
-            ))
-        )
-        if has_three_lian:
-            has_like = True
-            has_comment = True
-            has_forward = True
-        if has_five_lian:
-            has_follow = True
-            has_like = True
-            has_comment = True
-            has_favorite = True
-            has_forward = True
-        has_reserve = '预约' in action_scope
-        has_coin = '投币' in action_scope
-        if has_reserve:
-            action = 'reserve'
-        elif has_forward:
-            action = 'forward'
-        elif has_comment:
-            action = 'comment'
-        elif has_follow:
-            action = 'follow'
-        else:
-            action = 'forward'
-        required_actions = []
-        if has_follow:
-            required_actions.append('follow')
-        if has_comment:
-            required_actions.append('comment')
-        if has_like:
-            required_actions.append('like')
-        if has_favorite:
-            required_actions.append('favorite')
-        if has_forward:
-            required_actions.append('forward')
-        if has_reserve:
-            required_actions.append('reserve')
-        if has_coin:
-            required_actions.append('coin')
         result.update(
             confirmed=True,
             kind='plain_text_lottery',
-            action=action,
-            required_actions=required_actions,
+            action=action_details['action'],
+            required_actions=action_details['required_actions'],
             reason='verified_text_rules',
             has_prize=bool(has_prize),
-            has_action=bool(required_actions),
+            has_action=bool(action_details['required_actions']),
             action_certainty='implicit' if ('抽取' in normalized or '赠送' in normalized or '赢取' in normalized) and not any(word in action_scope for word in ('关注', '点赞', '评论', '留言', '转发', '五连', '三连')) else 'explicit',
         )
         return result
@@ -1364,6 +1532,43 @@ fetch(target, {credentials: 'include', signal: controller.signal})
         except (OSError, OverflowError, ValueError):
             return None
 
+    @staticmethod
+    def _has_official_lottery_hint(text):
+        normalized = str(text or '')
+        return any(
+            word in normalized for word in (
+                '互动抽奖', '官方平台抽奖', '官方抽奖', '动态抽奖',
+                '参与抽奖', '抽奖详情', '预约抽奖',
+            )
+        )
+
+    def _plain_text_notice_result(self, bro, item, classification):
+        self.lottery_source = 'plain_text'
+        text_deadline = self._parse_plain_text_deadline(
+            classification.get('text') or '',
+            now=self._publish_time_from_item(item),
+        )
+        try:
+            metadata = self.get_dynamic_time_metadata(bro)
+        except Exception:
+            metadata = {}
+        official_end_ts = metadata.get('lottery_end_ts')
+        plain_text_deadline = (
+            self._notice_datetime(official_end_ts)
+            if official_end_ts
+            else text_deadline
+        )
+        return {
+            'confirmed': True,
+            'retryable': False,
+            'reason': '',
+            'source': 'plain_text',
+            'lottery_rule': classification,
+            'lottery_id': self._extract_official_lottery_id(item),
+            'lottery_end_time': plain_text_deadline,
+            'status': None,
+        }
+
     def fetch_official_lottery_notice(self, bro, lucky_dynamic_url, retries=3):
         """返回结构化官方抽奖校验结果，不执行任何社交动作。"""
         match = re.search(r'/(\d+)(?:\?|$)', str(lucky_dynamic_url))
@@ -1413,46 +1618,21 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                 'lottery_rule': classification,
             }
         has_official_component = self._has_official_lottery_component(item)
-        if isinstance(item, dict) and classification.get('confirmed'):
+        official_hint = self._has_official_lottery_hint(
+            classification.get('text') or ''
+        )
+        if (
+            isinstance(item, dict)
+            and classification.get('confirmed')
+            and not has_official_component
+            and not official_hint
+        ):
             # Explicit text rules are executable even when the dynamic also
             # exposes an official component. This avoids spurious -9999
             # failures from lottery_notice and still preserves the verified
             # action set for the executor.
-            self.lottery_source = 'plain_text'
-            text_deadline = self._parse_plain_text_deadline(
-                classification.get('text') or '',
-                now=self._publish_time_from_item(item),
-            )
-            try:
-                metadata = self.get_dynamic_time_metadata(bro)
-            except Exception:
-                metadata = {}
-            official_end_ts = metadata.get('lottery_end_ts')
-            plain_text_deadline = (
-                self._notice_datetime(official_end_ts)
-                if official_end_ts
-                else text_deadline
-            )
-            return {
-                'confirmed': True,
-                'retryable': False,
-                'reason': '',
-                'source': 'plain_text',
-                'lottery_rule': classification,
-                'lottery_id': self._extract_official_lottery_id(item),
-                'lottery_end_time': plain_text_deadline,
-                'status': None,
-            }
+            return self._plain_text_notice_result(bro, item, classification)
         if isinstance(item, dict) and not has_official_component:
-            if classification.get('kind') == 'suspected_giveaway':
-                # We have enough text to know it may be a giveaway, but the
-                # rule is incomplete. Querying the official endpoint cannot
-                # resolve that ambiguity and only produces noisy -9999 errors.
-                return {
-                    'confirmed': False,
-                    'retryable': True,
-                    'reason': classification.get('reason') or 'ambiguous_giveaway',
-                }
             if classification.get('kind') == 'not_lottery' and classification.get('text'):
                 # The detail body is available and contains no giveaway
                 # vocabulary at all. Do not send every ordinary post to the
@@ -1499,6 +1679,43 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                         self.notice_lottery_time = self._coerce_datetime(
                             result.get('lottery_time')
                         )
+                        explicit_actions = classification.get('required_actions') or []
+                        required_actions = []
+                        for action in ('follow', 'comment', 'like', 'favorite', 'forward', 'reserve', 'coin'):
+                            if action in explicit_actions:
+                                required_actions.append(action)
+                        # The official H5 lottery page exposes whether the
+                        # account already followed/reposted. Only trust these
+                        # fields when the API actually returned them; legacy
+                        # mocks and reserve responses may omit them.
+                        if result.get('followed') is True and 'follow' in required_actions:
+                            required_actions.remove('follow')
+                        if result.get('reposted') is True and 'forward' in required_actions:
+                            required_actions.remove('forward')
+                        if 'followed' in result and result.get('followed') is not True:
+                            if 'follow' not in required_actions:
+                                required_actions.insert(0, 'follow')
+                        if 'reposted' in result and result.get('reposted') is not True:
+                            if 'forward' not in required_actions:
+                                required_actions.append('forward')
+                        official_rule = dict(classification) if isinstance(classification, dict) else {}
+                        official_rule.update({
+                            'required_actions': required_actions,
+                            'official_business_type': candidate_type,
+                            'official_business_id': str(candidate_id),
+                            'official_followed': result.get('followed'),
+                            'official_reposted': result.get('reposted'),
+                            'official_participated': result.get('participated'),
+                            'official_status': result.get('status'),
+                            'need_post': result.get('need_post'),
+                            'lottery_feed_limit': result.get('lottery_feed_limit'),
+                            'prize': (
+                                result.get('first_prize_cmt')
+                                or result.get('second_prize_cmt')
+                                or result.get('third_prize_cmt')
+                                or ''
+                            ),
+                        })
                         return {
                             'confirmed': True,
                             'retryable': False,
@@ -1510,6 +1727,10 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                                 result.get('lottery_time')
                             ),
                             'status': result.get('status'),
+                            'lottery_status': result.get('status'),
+                            'followed': result.get('followed'),
+                            'reposted': result.get('reposted'),
+                            'participated': result.get('participated'),
                             # Keep the text-derived action rule even when the
                             # official component supplies the lottery id.
                             'source': (
@@ -1517,11 +1738,7 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                                 if classification.get('confirmed')
                                 else 'official_notice'
                             ),
-                            'lottery_rule': (
-                                classification
-                                if classification.get('confirmed')
-                                else None
-                            ),
+                            'lottery_rule': official_rule,
                         }
                     if code == 0:
                         # code=0 但没有 lottery_id 不足以证明“不是抽奖”；
@@ -1550,6 +1767,11 @@ fetch(target, {credentials: 'include', signal: controller.signal})
                     time.sleep(0.4 * (attempt + 1))
             if last_reason == 'code0_without_lottery_id':
                 continue
+        if classification.get('confirmed'):
+            # A confirmed text rule remains executable when the optional
+            # official endpoint is temporarily unavailable. Do not downgrade
+            # a valid follow/repost/comment rule to a retry-only tombstone.
+            return self._plain_text_notice_result(bro, item, classification)
         result = {
             'confirmed': False,
             'retryable': True,
@@ -2447,6 +2669,16 @@ if (comments) comments.scrollIntoView({block: 'center'});
             self.click_follow_one(bro, chains, dynamic_url)
         self.upId = self.upIds[0]
         self.upUrl = self.upUrls[0]
+
+    def click_follow_author(self, bro, chains):
+        """Follow only the dynamic author, never unrelated @ mentions."""
+        dynamic_url = bro.current_url
+        self.get_up_info(bro)
+        if not self.upIds:
+            raise Exception('未解析到抽奖动态作者UID')
+        self.upId = self.upIds[0]
+        self.upUrl = self.upUrls[0]
+        self.click_follow_one(bro, chains, dynamic_url)
 
     def click_follow_one(self, bro, chains, dynamic_url):
         """

@@ -225,6 +225,27 @@ class VerifyLotteryServiceTests(unittest.TestCase):
             url='https://www.bilibili.com/opus/1', status='2'
         )
 
+    def test_official_ended_status_is_expired_without_deadline(self):
+        service = self.build_service()
+        service.draw_dao.query_by_verification_priority.return_value = [
+            {'dyn_url': 'https://www.bilibili.com/opus/1', 'status': '0'},
+        ]
+        service.checker.fetch_official_lottery_notice.return_value = {
+            'confirmed': True,
+            'lottery_id': '432907',
+            'lottery_status': 2,
+            'lottery_end_time': None,
+            'reason': '',
+        }
+
+        stats = service.verify_pending(limit=1)
+
+        self.assertEqual(stats['expired'], 1)
+        service.ready_dao.upsert.assert_not_called()
+        service.draw_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1', status='2'
+        )
+
     def test_action_failure_is_reverified_instead_of_being_terminal(self):
         service = self.build_service()
         service.draw_dao.query_by_verification_priority.return_value = [

@@ -175,7 +175,14 @@ class VerifyLotteryService(object):
                 if result.get('confirmed'):
                     lottery_end_time = result.get('lottery_end_time')
                     stats['confirmed'] += 1
-                    if self._is_expired(lottery_end_time):
+                    lottery_status = result.get(
+                        'lottery_status', result.get('status')
+                    )
+                    try:
+                        ended_by_status = int(lottery_status) == 2
+                    except (TypeError, ValueError):
+                        ended_by_status = False
+                    if self._is_expired(lottery_end_time) or ended_by_status:
                         self.draw_dao.update_sharedUrl(url=url, status='2')
                         self.scan_cache_dao.save_success('lottery', url, source, note, 1)
                         stats['expired'] += 1

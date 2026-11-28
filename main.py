@@ -22,7 +22,8 @@ def get_queue_counts():
     """Read ready, eligible-pending, and cooling-pending queue counts."""
     verify_service = VerifyLotteryService(globals.my_user_id)
     queue = verify_service.draw_dao.verification_queue_counts(
-        retry_minutes=VerifyLotteryService.RETRY_BACKOFF_MINUTES
+        retry_minutes=VerifyLotteryService.RETRY_BACKOFF_MINUTES,
+        semantic_retry_minutes=VerifyLotteryService.SEMANTIC_RETRY_BACKOFF_MINUTES,
     )
     pending = int(queue.get('eligible') or 0)
     total = int(queue.get('total') or 0)

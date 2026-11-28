@@ -98,6 +98,21 @@ class DrawDynamicDaoTests(unittest.TestCase):
         self.assertIn("c.status <> '3'", sql)
         self.assertIn('interval 15 minute', sql)
 
+    def test_verification_queue_counts_respect_semantic_backoff(self):
+        db = Mock()
+        db.select_db.return_value = [{'total': 46, 'eligible': 0}]
+        dao = DrawDynamicDao(db)
+
+        counts = dao.verification_queue_counts(
+            retry_minutes=15, semantic_retry_minutes=120
+        )
+
+        self.assertEqual(counts, {'total': 46, 'eligible': 0})
+        sql = db.select_db.call_args.args[0].lower()
+        self.assertIn('interval 120 minute', sql)
+        self.assertIn('last_error', sql)
+        self.assertIn('missing_action', sql)
+
     def test_verification_priority_is_fair_round_robin(self):
         db = Mock()
         db.select_db.return_value = [{'dyn_url': 'https://www.bilibili.com/opus/123'}]

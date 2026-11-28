@@ -59,16 +59,27 @@ class DrawDynamicDao(object):
         except Exception:
             return []
 
-    def verification_queue_counts(self, retry_minutes=15):
+    def verification_queue_counts(self, retry_minutes=15, semantic_retry_minutes=120):
         """Return total modern pending rows and rows eligible now."""
         retry_minutes = max(0, int(retry_minutes))
+        semantic_retry_minutes = max(retry_minutes, int(semantic_retry_minutes))
         sql = """
         SELECT COUNT(*) AS total,
                COALESCE(SUM(
                    CASE
                      WHEN c.scan_key IS NULL OR c.status <> '3'
-                          OR COALESCE(c.update_time, c.insert_time)
-                             <= NOW() - INTERVAL %s MINUTE
+                     THEN 1
+                     WHEN c.last_error IN (
+                         'missing_action', 'missing_prize',
+                         'code0_without_lottery_id'
+                     ) AND COALESCE(c.update_time, c.insert_time)
+                         <= NOW() - INTERVAL %s MINUTE
+                     THEN 1
+                     WHEN (c.last_error IS NULL OR c.last_error NOT IN (
+                         'missing_action', 'missing_prize',
+                         'code0_without_lottery_id'
+                     )) AND COALESCE(c.update_time, c.insert_time)
+                         <= NOW() - INTERVAL %s MINUTE
                      THEN 1 ELSE 0
                    END
                ), 0) AS eligible
@@ -78,7 +89,7 @@ class DrawDynamicDao(object):
         WHERE d.status IN ('0', '3')
           AND CAST(SUBSTRING_INDEX(d.dyn_url, '/', -1) AS UNSIGNED)
               >= 1250000000000000000
-        """ % retry_minutes
+        """ % (semantic_retry_minutes, retry_minutes)
         try:
             rows = self.db.select_db(sql) or []
             row = rows[0] if rows else {}

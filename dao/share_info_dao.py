@@ -1,3 +1,5 @@
+import re
+
 from dao.init_db import init_db
 from service.share_service.share_one_dynamic import DynamicShareBase
 
@@ -35,9 +37,29 @@ class ShareInfoDao(object):
         except Exception as e:
             return {}
 
+    def query_shareInfo_by_dynamic_id(self, share_url, user_id):
+        """Find an existing share record for either t/opus URL form."""
+        match = re.search(r'/(\d+)(?:\?|$)', str(share_url or ''))
+        if not match:
+            return []
+        dynamic_id = match.group(1)
+        try:
+            sql = (
+                "SELECT * FROM " + self.table_name
+                + " WHERE SUBSTRING_INDEX(SUBSTRING_INDEX(share_url, '/', -1), '?', 1) = '"
+                + dynamic_id + "' AND user_id = '" + str(user_id) + "'"
+            )
+            return self.db.select_db(sql) or []
+        except Exception:
+            return []
+
 
     def insert_shareInfo(self, shareInfo):
         try:
+            if self.query_shareInfo_by_dynamic_id(
+                getattr(shareInfo, 'share_url', ''), getattr(shareInfo, 'user_id', '')
+            ):
+                return False
             params = {}
             params['upId'] = str(shareInfo.upId)
             params['upUrl'] = str(shareInfo.upUrl)
@@ -48,8 +70,10 @@ class ShareInfoDao(object):
             params['user_id'] = str(shareInfo.user_id)
             params['share_status'] = str(shareInfo.share_status)
             self.db.insert(self.table_name, params)
+            return True
         except Exception as e:
             print(e)
+            return False
 
 if __name__ == '__main__':
     db = init_db()

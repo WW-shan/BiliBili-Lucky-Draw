@@ -568,6 +568,28 @@ class BiliLinkShareTests(unittest.TestCase):
         )
         dynamic_share.assert_not_called()
 
+    def test_alternate_url_form_share_record_prevents_duplicate_action(self):
+        service = self.build_service()
+        service.share_info_dao.query_shareInfo_by_shareUrl.return_value = []
+        service.share_info_dao.query_shareInfo_by_dynamic_id.return_value = [
+            {'status': 0}
+        ]
+        login = Mock()
+        login.login_by_cookie.return_value = '35549700'
+
+        with patch(
+            'service.share_service.share_from_biliLink.LoginService',
+            return_value=login,
+        ), patch(
+            'service.share_service.share_from_biliLink.DynamicShareBase'
+        ) as dynamic_share:
+            service.do_share_by_links()
+
+        service.draw_dynamic_dao.update_sharedUrl.assert_called_once_with(
+            url='https://www.bilibili.com/opus/1270000000000000001', status=1
+        )
+        dynamic_share.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

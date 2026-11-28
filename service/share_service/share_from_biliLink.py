@@ -101,6 +101,12 @@ class BiliLinkShare(object):
                 shared = self.share_info_dao.query_shareInfo_by_shareUrl(
                     lucky_dynamic_url, self.user_id
                 )
+                if len(shared) == 0:
+                    alternate_share = self.share_info_dao.query_shareInfo_by_dynamic_id(
+                        lucky_dynamic_url, self.user_id
+                    )
+                    if isinstance(alternate_share, (list, dict)) and alternate_share:
+                        shared = alternate_share
                 if len(shared) != 0:
                     self.draw_dynamic_dao.update_sharedUrl(
                         url=lucky_dynamic_url, status=1
